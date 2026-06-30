@@ -18,7 +18,7 @@ mypy = ">=1.16,<2"
 pydocstyle = ">=6,<7"
 marimo = ">=0.23,<0.24"
 hatchling = ">=1.25"
+matplotlib = ">=3.8"
 
 [pypi-dependencies]
 cell-regionprops = { path = ".", editable = true }
-

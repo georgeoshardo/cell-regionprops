@@ -15,6 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "marimo", "mypy", "pydocstyle"]
+demo = ["matplotlib"]
 
 [build-system]
 requires = ["hatchling"]
@@ -28,4 +29,3 @@ python_version = "3.11"
 disallow_untyped_defs = true
 ignore_missing_imports = true
 warn_unused_ignores = true
-
