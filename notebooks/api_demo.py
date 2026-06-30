@@ -12,7 +12,7 @@
 
 import marimo
 
-__generated_with = "0.23.0"
+__generated_with = "0.23.11"
 app = marimo.App(width="medium")
 
 
@@ -37,7 +37,6 @@ def _():
         binary_regionprops_table,
         mo,
         np,
-        pd,
         plt,
         regionprops_table,
         stack_regionprops_table,
@@ -93,7 +92,62 @@ def _(label_image, regionprops_table):
         properties=("label", "area", "centroid", "moments_axis"),
     )
     single_frame_table.head()
-    return (single_frame_table,)
+    return
+
+
+@app.cell
+def _(label_image, regionprops_table):
+    morphometrics_table = regionprops_table(
+        label_image,
+        properties=("label", "morphometrics"),
+    )
+    morphometrics_table[
+        [
+            "label",
+            "method_morphometrics",
+            "length_morphometrics",
+            "width_morphometrics",
+            "volume_morphometrics",
+            "surface_area_morphometrics",
+            "surface_area_to_volume_ratio_morphometrics",
+        ]
+    ].head()
+    return (morphometrics_table,)
+
+
+@app.cell
+def _(label_image, morphometrics_table, np, plt):
+    _valid_morphometrics = morphometrics_table[
+        morphometrics_table["method_morphometrics"] == "contour_voronoi_rib_intersections"
+    ]
+    _morph_row = _valid_morphometrics.iloc[0]
+    _morph_label = int(_morph_row["label"])
+    _morph_mask = np.where(label_image == _morph_label, _morph_label, 0)
+    _morph_mesh = _morph_row["mesh_px_morphometrics"]
+    _morph_centerline = _morph_row["centerline_xy_morphometrics"]
+
+    morphometrics_mesh_fig, morphometrics_mesh_ax = plt.subplots(figsize=(3.0, 5.0))
+    morphometrics_mesh_ax.imshow(_morph_mask, cmap="tab20", interpolation="nearest")
+    for _rib in _morph_mesh:
+        morphometrics_mesh_ax.plot(
+            [_rib[0], _rib[2]],
+            [_rib[1], _rib[3]],
+            color="deepskyblue",
+            linewidth=0.8,
+            alpha=0.8,
+        )
+    morphometrics_mesh_ax.plot(
+        _morph_centerline[:, 0],
+        _morph_centerline[:, 1],
+        color="red",
+        linewidth=1.2,
+    )
+    morphometrics_mesh_ax.set_title(f"Label {_morph_label}: Morphometrics mesh")
+    morphometrics_mesh_ax.set_axis_off()
+    plt.tight_layout()
+    plt.show()
+    morphometrics_mesh_fig
+    return
 
 
 @app.cell
@@ -103,7 +157,7 @@ def _(binary_regionprops_table, label_image):
         properties=("label", "area", "moments_axis"),
     )
     binary_table
-    return (binary_table,)
+    return
 
 
 @app.cell
@@ -134,7 +188,7 @@ def _(plt, stack_table):
     plt.tight_layout()
     plt.show()
     area_fig
-    return (area_trace,)
+    return
 
 
 if __name__ == "__main__":
