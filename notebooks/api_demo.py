@@ -46,12 +46,11 @@ def _():
 
 @app.cell
 def _(mo):
-    mo.Html(
-        "<h1><code>cell-regionprops</code> API demo</h1>"
-        "<p>This notebook uses a small real-mask zarr copied from the parent "
-        "scientific-data repository. The package itself only measures masks; it "
-        "does not know about the experiment, hypotheses, mothers, or divisions.</p>"
-    )
+    mo.md(r"""
+    # `cell-regionprops` API demo
+
+    This notebook uses a small real-mask zarr copied from the parent scientific-data repository. The package itself only measures masks; it does not know about the experiment, hypotheses, mothers, or divisions.
+    """)
     return
 
 
@@ -65,11 +64,11 @@ def _(Path, np, zarr):
 
 @app.cell
 def _(demo_masks, demo_zarr, mo):
-    mo.Html(
-        f"<p>Demo zarr: <code>{demo_zarr}</code></p>"
-        f"<p>Shape: <code>{demo_masks.shape}</code> as "
-        "<code>(sample, frame, y, x)</code></p>"
-    )
+    mo.md(f"""
+    Demo zarr: `{demo_zarr}`
+
+    Shape: `{demo_masks.shape}` as `(sample, frame, y, x)`
+    """)
     return
 
 
@@ -91,7 +90,7 @@ def _(label_image, regionprops_table):
         label_image,
         properties=("label", "area", "centroid", "moments_axis"),
     )
-    single_frame_table.head()
+    single_frame_table
     return
 
 
@@ -101,17 +100,7 @@ def _(label_image, regionprops_table):
         label_image,
         properties=("label", "morphometrics"),
     )
-    morphometrics_table[
-        [
-            "label",
-            "method_morphometrics",
-            "length_morphometrics",
-            "width_morphometrics",
-            "volume_morphometrics",
-            "surface_area_morphometrics",
-            "surface_area_to_volume_ratio_morphometrics",
-        ]
-    ].head()
+    morphometrics_table
     return (morphometrics_table,)
 
 
@@ -146,7 +135,6 @@ def _(label_image, morphometrics_table, np, plt):
     morphometrics_mesh_ax.set_axis_off()
     plt.tight_layout()
     plt.show()
-    morphometrics_mesh_fig
     return
 
 
@@ -163,7 +151,7 @@ def _(binary_regionprops_table, label_image):
 @app.cell
 def _(demo_masks, stack_regionprops_table):
     stack_table = stack_regionprops_table(
-        demo_masks[:2, :5],
+        demo_masks[0:1, :],
         index_names=("sample", "frame"),
         properties=("label", "area"),
     )
@@ -174,20 +162,19 @@ def _(demo_masks, stack_regionprops_table):
 @app.cell
 def _(plt, stack_table):
     area_trace = (
-        stack_table.groupby(["sample", "frame"], as_index=False)["area_px"]
+        stack_table.groupby(["sample", "frame", "label"], as_index=False)["area_px"]
         .sum()
         .sort_values(["sample", "frame"])
     )
 
+    mother_cell_area = area_trace.query("label == 1")
+
     area_fig, area_ax = plt.subplots(figsize=(5.0, 3.0))
-    for sample, group in area_trace.groupby("sample"):
-        area_ax.plot(group["frame"], group["area_px"], marker="o", label=f"sample {sample}")
+    area_ax.plot(mother_cell_area["frame"], mother_cell_area["area_px"], marker="o")
     area_ax.set_xlabel("Frame")
     area_ax.set_ylabel("Total labeled area (px)")
-    area_ax.legend(frameon=False)
     plt.tight_layout()
     plt.show()
-    area_fig
     return
 
 
