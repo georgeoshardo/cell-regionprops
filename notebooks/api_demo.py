@@ -73,13 +73,21 @@ def _(demo_masks, demo_zarr, mo):
 
 
 @app.cell
-def _(label_image, plt):
+def _(np, plt):
+    _tab20_colors = plt.get_cmap("tab20")(np.linspace(0, 1, 20))
+    _tab20_colors[0] = [0, 0, 0, 1]
+    mask_cmap = plt.matplotlib.colors.ListedColormap(_tab20_colors)
+    mask_cmap
+    return (mask_cmap,)
+
+
+@app.cell
+def _(label_image, mask_cmap, plt):
     mask_fig, mask_ax = plt.subplots(figsize=(3.0, 5.0))
-    mask_ax.imshow(label_image, cmap="tab20", interpolation="nearest")
+    mask_ax.imshow(label_image, cmap=mask_cmap, interpolation="nearest")
     mask_ax.set_title("Example labeled mask")
     mask_ax.set_axis_off()
     plt.tight_layout()
-    plt.show()
     mask_fig
     return
 
@@ -105,7 +113,14 @@ def _(label_image, regionprops_table):
 
 
 @app.cell
-def _(demo_masks, label_image, morphometrics_table, plt, regionprops_table):
+def _(
+    demo_masks,
+    label_image,
+    mask_cmap,
+    morphometrics_table,
+    plt,
+    regionprops_table,
+):
     _frame_250_image = demo_masks[0, 250]
     _frame_250_morphometrics_table = regionprops_table(
         _frame_250_image,
@@ -119,7 +134,7 @@ def _(demo_masks, label_image, morphometrics_table, plt, regionprops_table):
         (_mesh_ax, label_image, morphometrics_table, "Frame 0"),
         (_frame_250_ax, _frame_250_image, _frame_250_morphometrics_table, "Frame 250"),
     ]:
-        _ax.imshow(_image, cmap="tab20", interpolation="nearest")
+        _ax.imshow(_image, cmap=mask_cmap, interpolation="nearest")
         _valid_rows = _table[
             _table["method_morphometrics"] == "contour_voronoi_rib_intersections"
         ]
@@ -130,22 +145,35 @@ def _(demo_masks, label_image, morphometrics_table, plt, regionprops_table):
                 _ax.plot(
                     [_rib[0], _rib[2]],
                     [_rib[1], _rib[3]],
-                    color="deepskyblue",
-                    linewidth=0.7,
-                    alpha=0.65,
+                    color="black",
+                    linewidth=2.2,
+                    alpha=0.95,
+                )
+                _ax.plot(
+                    [_rib[0], _rib[2]],
+                    [_rib[1], _rib[3]],
+                    color="white",
+                    linewidth=1.0,
+                    alpha=0.95,
                 )
             _ax.plot(
                 _centerline[:, 0],
                 _centerline[:, 1],
-                color="red",
-                linewidth=1.0,
-                alpha=0.8,
+                color="black",
+                linewidth=3.0,
+                alpha=0.95,
+            )
+            _ax.plot(
+                _centerline[:, 0],
+                _centerline[:, 1],
+                color="yellow",
+                linewidth=1.4,
+                alpha=0.95,
             )
         _ax.set_title(f"{_title}: {_valid_rows.shape[0]} meshes")
         _ax.set_axis_off()
 
     plt.tight_layout()
-    plt.show()
     morphometrics_mesh_fig
     return
 
@@ -197,7 +225,6 @@ def _(plt, stack_table):
     length_ax.set_ylabel("Length (px)")
     length_ax.legend(frameon=False)
     plt.tight_layout()
-    plt.show()
     length_fig
     return
 
