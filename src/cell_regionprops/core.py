@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, Literal, Mapping, Sequence, TypeAlias
+from typing import Any, Callable, Iterable, Mapping, Sequence, TypeAlias
 
 import dask.array as da
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 from numpy.typing import ArrayLike, NDArray
 
 from cell_regionprops.registry import DEFAULT_PROPERTIES, PROPERTY_REGISTRY
 
 ExtraProperty: TypeAlias = Callable[[NDArray[np.bool_]], object]
-ExecutionMode: TypeAlias = Literal["auto", "vectorized", "loop"]
 
 _VECTORIZABLE_PROPERTIES = {"label", "area", "centroid", "moments_axis"}
 
@@ -153,15 +153,16 @@ def stack_regionprops_table(
     pixel_size: float = 1.0,
     properties: Iterable[str] | None = None,
     extra_properties: Mapping[str, ExtraProperty] | None = None,
-    execution: ExecutionMode = "auto",
+    morphometrics_n_jobs: int = -1,
 ) -> pd.DataFrame:
     """Measure labels in every 2D frame of a stack.
 
     The last two axes are interpreted as `y, x`; all leading axes are iterated
     and copied into index columns. Empty frames contribute no rows unless
-    labels are requested by calling `regionprops_table` directly. Area,
-    centroid, and moment-axis properties are computed with a vectorized stack
-    path by default; non-vectorizable properties use the loop path.
+    labels are requested by calling `regionprops_table` directly. Label, area,
+    centroid, and moment-axis properties are always computed with the vectorized
+    stack path. Morphometrics and extra properties are computed per object and
+    merged back onto the vectorized results.
 
     Args:
         label_stack: Integer labeled array-like object with shape
@@ -173,9 +174,9 @@ def stack_regionprops_table(
             built-in properties.
         extra_properties: Additional named functions that receive each binary
             object mask and return one scalar-like value.
-        execution: Execution mode. `"auto"` uses the vectorized path when all
-            requested properties support it, `"vectorized"` requires that path,
-            and `"loop"` forces the single-frame loop. Defaults to `"auto"`.
+        morphometrics_n_jobs: Number of parallel workers for non-vectorized
+            morphometrics and extra-property measurements. `-1` uses all cores;
+            `0` and `1` run serially. Defaults to `-1`.
 
     Returns:
         A dataframe containing index columns followed by measurement columns.
@@ -183,16 +184,13 @@ def stack_regionprops_table(
     Raises:
         TypeError: If `label_stack` is not integer labeled.
         ValueError: If `label_stack` has fewer than three dimensions or the
-            number of `index_names` does not match the leading axes, or if
-            `"vectorized"` is requested for unsupported properties.
+            number of `index_names` does not match the leading axes.
     """
     stack: Any = label_stack if _is_dask_array(label_stack) else np.asarray(label_stack)
     if stack.ndim < 3:
         raise ValueError("`label_stack` must have at least three dimensions.")
     if not np.issubdtype(stack.dtype, np.integer):
         raise TypeError("`label_stack` must contain integer labels.")
-    if execution not in {"auto", "vectorized", "loop"}:
-        raise ValueError("`execution` must be one of 'auto', 'vectorized', or 'loop'.")
 
     leading_shape = stack.shape[:-2]
     names = tuple(index_names) if index_names is not None else tuple(
@@ -202,55 +200,125 @@ def stack_regionprops_table(
         raise ValueError("`index_names` must match the number of leading axes.")
 
     selected_properties = _normalise_properties(properties)
-    supports_vectorized = (
-        extra_properties is None
-        and set(selected_properties).issubset(_VECTORIZABLE_PROPERTIES)
+    vectorized_properties = tuple(
+        property_name
+        for property_name in selected_properties
+        if property_name in _VECTORIZABLE_PROPERTIES
     )
-    if execution == "vectorized" and not supports_vectorized:
-        raise ValueError("Requested properties are not supported by the vectorized stack path.")
-    if execution == "vectorized" or (execution == "auto" and supports_vectorized):
-        return _stack_regionprops_table_vectorized(
+    per_object_properties = tuple(
+        property_name
+        for property_name in selected_properties
+        if property_name not in _VECTORIZABLE_PROPERTIES
+    )
+
+    vectorized_table = (
+        _stack_regionprops_table_vectorized(
             stack,
             index_names=names,
             pixel_size=pixel_size,
-            properties=selected_properties,
+            properties=vectorized_properties,
         )
-    return _stack_regionprops_table_loop(
-        np.asarray(stack),
+        if vectorized_properties
+        else pd.DataFrame()
+    )
+    per_object_table = (
+        _stack_regionprops_table_per_object(
+            _compute_stack_if_needed(stack),
+            index_names=names,
+            pixel_size=pixel_size,
+            properties=per_object_properties,
+            extra_properties=extra_properties,
+            n_jobs=morphometrics_n_jobs,
+        )
+        if per_object_properties or extra_properties is not None
+        else pd.DataFrame()
+    )
+    return _merge_stack_property_tables(
+        vectorized_table,
+        per_object_table,
         index_names=names,
-        pixel_size=pixel_size,
-        properties=selected_properties,
-        extra_properties=extra_properties,
     )
 
 
-def _stack_regionprops_table_loop(
+def _compute_stack_if_needed(stack: Any) -> NDArray[np.integer]:
+    if _is_dask_array(stack):
+        return np.asarray(stack.compute())
+    return np.asarray(stack)
+
+
+def _normalise_n_jobs(n_jobs: int) -> int:
+    return 1 if n_jobs == 0 else n_jobs
+
+
+def _stack_regionprops_table_per_object(
     stack: NDArray[np.integer],
     *,
     index_names: tuple[str, ...],
     pixel_size: float,
     properties: tuple[str, ...],
     extra_properties: Mapping[str, ExtraProperty] | None,
+    n_jobs: int,
 ) -> pd.DataFrame:
     leading_shape = stack.shape[:-2]
-    tables: list[pd.DataFrame] = []
-    for index in np.ndindex(leading_shape):
+    frame_indices = list(np.ndindex(leading_shape))
+    requested_properties = ("label", *properties)
+
+    def measure_frame(index: tuple[int, ...]) -> list[dict[str, object]]:
         frame = stack[index]
         table = regionprops_table(
             frame,
             pixel_size=pixel_size,
-            properties=properties,
+            properties=requested_properties,
             extra_properties=extra_properties,
         )
         if table.empty:
-            continue
-        for name, value in reversed(list(zip(index_names, index))):
-            table.insert(0, name, value)
-        tables.append(table)
+            return []
+        prefix = {
+            name: int(value)
+            for name, value in zip(index_names, index)
+        }
+        return [
+            {**prefix, **row}
+            for row in table.to_dict("records")
+        ]
 
-    if not tables:
+    normalised_n_jobs = _normalise_n_jobs(n_jobs)
+    if normalised_n_jobs == 1:
+        measured_rows = [measure_frame(index) for index in frame_indices]
+    else:
+        measured_rows = Parallel(n_jobs=normalised_n_jobs)(
+            delayed(measure_frame)(index)
+            for index in frame_indices
+        )
+
+    rows = [
+        row
+        for frame_rows in measured_rows
+        for row in frame_rows
+    ]
+
+    if not rows:
         return pd.DataFrame(columns=list(index_names))
-    return pd.concat(tables, ignore_index=True)
+    return pd.DataFrame(rows)
+
+
+def _merge_stack_property_tables(
+    vectorized_table: pd.DataFrame,
+    per_object_table: pd.DataFrame,
+    *,
+    index_names: tuple[str, ...],
+) -> pd.DataFrame:
+    if vectorized_table.empty:
+        return per_object_table
+    if per_object_table.empty:
+        return vectorized_table
+    merge_columns = [*index_names, "label"]
+    return vectorized_table.merge(
+        per_object_table,
+        on=merge_columns,
+        how="outer",
+        sort=True,
+    )
 
 
 def _stack_regionprops_table_vectorized(

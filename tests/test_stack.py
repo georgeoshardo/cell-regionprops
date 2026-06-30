@@ -1,7 +1,11 @@
 import numpy as np
 import dask.array as da
+import pandas as pd
+import pytest
 
+from cell_regionprops import regionprops_table
 from cell_regionprops import stack_regionprops_table
+from cell_regionprops import core
 
 
 def test_stack_regionprops_table_adds_leading_axis_indices() -> None:
@@ -32,7 +36,7 @@ def test_stack_regionprops_table_rejects_index_name_mismatch() -> None:
         raise AssertionError("Expected stack_regionprops_table to reject mismatched names.")
 
 
-def test_stack_regionprops_table_can_require_vectorized_moments_path() -> None:
+def test_stack_regionprops_table_computes_moments_without_execution_argument() -> None:
     stack = np.zeros((1, 2, 5, 5), dtype=np.uint8)
     stack[0, 0, 1:3, 1:3] = 1
     stack[0, 1, 1:4, 1:3] = 1
@@ -41,7 +45,6 @@ def test_stack_regionprops_table_can_require_vectorized_moments_path() -> None:
         stack,
         index_names=("sample", "frame"),
         properties=("label", "area", "centroid", "moments_axis"),
-        execution="vectorized",
     )
 
     assert table["frame"].tolist() == [0, 1]
@@ -51,33 +54,40 @@ def test_stack_regionprops_table_can_require_vectorized_moments_path() -> None:
     assert table["width_px_moments"].notna().all()
 
 
-def test_stack_regionprops_table_vectorized_matches_loop_for_moments() -> None:
+def test_stack_regionprops_table_moments_match_single_frame_table() -> None:
     stack = np.zeros((2, 3, 6, 6), dtype=np.uint8)
     stack[0, 0, 1:3, 1:4] = 1
     stack[0, 1, 2:5, 2:4] = 2
     stack[1, 2, 1:5, 1:3] = 1
 
-    vectorized = stack_regionprops_table(
+    stack_table = stack_regionprops_table(
         stack,
         index_names=("sample", "frame"),
         properties=("label", "area", "centroid", "moments_axis"),
-        execution="vectorized",
-    ).sort_values(["sample", "frame", "label"]).reset_index(drop=True)
-    loop = stack_regionprops_table(
-        stack,
-        index_names=("sample", "frame"),
-        properties=("label", "area", "centroid", "moments_axis"),
-        execution="loop",
     ).sort_values(["sample", "frame", "label"]).reset_index(drop=True)
 
-    assert vectorized.columns.tolist() == loop.columns.tolist()
+    single_frame_tables = []
+    for sample, frame in np.ndindex(stack.shape[:-2]):
+        table = regionprops_table(
+            stack[sample, frame],
+            properties=("label", "area", "centroid", "moments_axis"),
+        )
+        if table.empty:
+            continue
+        table.insert(0, "frame", frame)
+        table.insert(0, "sample", sample)
+        single_frame_tables.append(table)
+    expected = pd.concat(single_frame_tables, ignore_index=True)
+    expected = expected.sort_values(["sample", "frame", "label"]).reset_index(drop=True)
+
+    assert stack_table.columns.tolist() == expected.columns.tolist()
     np.testing.assert_allclose(
-        vectorized.drop(columns=["sample", "frame", "label"]).to_numpy(dtype=float),
-        loop.drop(columns=["sample", "frame", "label"]).to_numpy(dtype=float),
+        stack_table.drop(columns=["sample", "frame", "label"]).to_numpy(dtype=float),
+        expected.drop(columns=["sample", "frame", "label"]).to_numpy(dtype=float),
     )
 
 
-def test_stack_regionprops_table_rejects_unsupported_vectorized_properties() -> None:
+def test_stack_regionprops_table_rejects_execution_keyword() -> None:
     stack = np.zeros((1, 1, 8, 8), dtype=np.uint8)
     stack[0, 0, 2:6, 2:6] = 1
 
@@ -85,13 +95,58 @@ def test_stack_regionprops_table_rejects_unsupported_vectorized_properties() -> 
         stack_regionprops_table(
             stack,
             index_names=("sample", "frame"),
-            properties=("label", "morphometrics"),
-            execution="vectorized",
+            properties=("label", "area"),
+            execution="loop",  # type: ignore[call-arg]
         )
-    except ValueError as error:
-        assert "vectorized" in str(error)
+    except TypeError as error:
+        assert "execution" in str(error)
     else:
-        raise AssertionError("Expected unsupported vectorized properties to fail.")
+        raise AssertionError("Expected stack_regionprops_table to reject execution.")
+
+
+def test_stack_regionprops_table_vectorizes_moments_when_morphometrics_is_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stack = np.zeros((1, 2, 20, 20), dtype=np.uint8)
+    stack[0, 0, 5:15, 7:13] = 1
+    stack[0, 1, 4:16, 7:13] = 1
+    calls: list[tuple[str, ...]] = []
+    original = core._stack_regionprops_table_vectorized
+
+    def spy_vectorized(*args, **kwargs):
+        calls.append(kwargs["properties"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(core, "_stack_regionprops_table_vectorized", spy_vectorized)
+
+    table = stack_regionprops_table(
+        stack,
+        index_names=("sample", "frame"),
+        properties=("label", "moments_axis", "morphometrics"),
+        morphometrics_n_jobs=0,
+    )
+
+    assert calls == [("label", "moments_axis")]
+    assert "length_px_moments" in table.columns
+    assert "length_px_morphometrics" in table.columns
+    assert table["label"].tolist() == [1, 1]
+
+
+def test_stack_regionprops_table_parallel_morphometrics_returns_rows() -> None:
+    stack = np.zeros((1, 2, 20, 20), dtype=np.uint8)
+    stack[0, 0, 5:15, 7:13] = 1
+    stack[0, 1, 4:16, 7:13] = 1
+
+    table = stack_regionprops_table(
+        stack,
+        index_names=("sample", "frame"),
+        properties=("label", "morphometrics"),
+        morphometrics_n_jobs=2,
+    )
+
+    assert table["frame"].tolist() == [0, 1]
+    assert table["label"].tolist() == [1, 1]
+    assert "method_morphometrics" in table.columns
 
 
 def test_stack_regionprops_table_vectorized_accepts_dask_arrays() -> None:
@@ -104,7 +159,6 @@ def test_stack_regionprops_table_vectorized_accepts_dask_arrays() -> None:
         stack,
         index_names=("sample", "frame"),
         properties=("label", "area", "centroid", "moments_axis"),
-        execution="vectorized",
     )
 
     assert table["frame"].tolist() == [0, 1]

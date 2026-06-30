@@ -12,6 +12,7 @@ dependencies = [
     "networkx",
     "zarr",
     "dask",
+    "joblib",
 ]
 
 [project.optional-dependencies]

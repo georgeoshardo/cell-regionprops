@@ -20,6 +20,7 @@ marimo = ">=0.23,<0.24"
 hatchling = ">=1.25"
 matplotlib = ">=3.8"
 dask = ">=2024"
+joblib = ">=1.4"
 
 [pypi-dependencies]
 cell-regionprops = { path = ".", editable = true }

@@ -196,7 +196,6 @@ def _(demo_masks, np, stack_regionprops_table):
         _label_one_stack,
         index_names=("sample", "frame"),
         properties=("label", "moments_axis", "morphometrics"),
-        execution="loop",
     )
     stack_table.head()
     return (stack_table,)
@@ -233,57 +232,55 @@ def _(plt, stack_table):
 
 @app.cell
 def _(demo_masks, np, pd, stack_regionprops_table):
-    vectorized_stack_table = stack_regionprops_table(
+    hybrid_stack_table = stack_regionprops_table(
+        demo_masks[:1, :50],
+        index_names=("sample", "frame"),
+        properties=("label", "area", "centroid", "moments_axis", "morphometrics"),
+        morphometrics_n_jobs=0,
+    )
+
+    moments_stack_table = stack_regionprops_table(
         demo_masks[:1, :50],
         index_names=("sample", "frame"),
         properties=("label", "area", "centroid", "moments_axis"),
-        execution="vectorized",
     )
 
-    loop_stack_table = stack_regionprops_table(
-        demo_masks[:1, :50],
-        index_names=("sample", "frame"),
-        properties=("label", "area", "centroid", "moments_axis"),
-        execution="loop",
-    )
+    _hybrid_key_columns = ["sample", "frame", "label"]
+    _hybrid_moments = hybrid_stack_table.sort_values(_hybrid_key_columns).reset_index(drop=True)
+    _moments_only = moments_stack_table.sort_values(_hybrid_key_columns).reset_index(drop=True)
 
-    _vectorized_sorted = vectorized_stack_table.sort_values(
-        ["sample", "frame", "label"]
-    ).reset_index(drop=True)
-    _loop_sorted = loop_stack_table.sort_values(
-        ["sample", "frame", "label"]
-    ).reset_index(drop=True)
-
-    vectorized_stack_matches_loop = (
-        _vectorized_sorted[["sample", "frame", "label", "area_px"]].equals(
-            _loop_sorted[["sample", "frame", "label", "area_px"]]
+    hybrid_moments_match_fast_path = (
+        _hybrid_moments[[*_hybrid_key_columns, "area_px"]].equals(
+            _moments_only[[*_hybrid_key_columns, "area_px"]]
         )
         and np.allclose(
-            _vectorized_sorted[
+            _hybrid_moments[
                 ["centroid_y", "centroid_x", "length_px_moments", "width_px_moments"]
             ],
-            _loop_sorted[
+            _moments_only[
                 ["centroid_y", "centroid_x", "length_px_moments", "width_px_moments"]
             ],
             equal_nan=True,
         )
     )
 
-    vectorized_stack_summary = pd.DataFrame(
+    hybrid_stack_summary = pd.DataFrame(
         [
             {
-                "execution": "vectorized",
-                "rows": len(vectorized_stack_table),
-                "matches_loop": vectorized_stack_matches_loop,
+                "table": "moments only",
+                "rows": len(moments_stack_table),
+                "has_morphometrics": False,
+                "moments_match_fast_path": True,
             },
             {
-                "execution": "loop",
-                "rows": len(loop_stack_table),
-                "matches_loop": True,
+                "table": "moments + morphometrics",
+                "rows": len(hybrid_stack_table),
+                "has_morphometrics": "length_px_morphometrics" in hybrid_stack_table.columns,
+                "moments_match_fast_path": hybrid_moments_match_fast_path,
             },
         ]
     )
-    vectorized_stack_summary
+    hybrid_stack_summary
     return
 
 
