@@ -80,6 +80,7 @@ def _(label_image, plt):
     mask_ax.set_axis_off()
     plt.tight_layout()
     plt.show()
+    mask_fig
     return
 
 
@@ -104,39 +105,44 @@ def _(label_image, regionprops_table):
 
 
 @app.cell
-def _(demo_masks, label_image, morphometrics_table, plt):
-    _valid_morphometrics = morphometrics_table[
-        morphometrics_table["method_morphometrics"] == "contour_voronoi_rib_intersections"
-    ]
-    _morph_row = _valid_morphometrics.iloc[0]
-    _morph_label = int(_morph_row["label"])
-    _morph_mesh = _morph_row["mesh_px_morphometrics"]
-    _morph_centerline = _morph_row["centerline_xy_morphometrics"]
+def _(demo_masks, label_image, morphometrics_table, plt, regionprops_table):
+    _frame_250_image = demo_masks[0, 250]
+    _frame_250_morphometrics_table = regionprops_table(
+        _frame_250_image,
+        properties=("label", "morphometrics"),
+    )
 
     morphometrics_mesh_fig, morphometrics_mesh_axes = plt.subplots(1, 2, figsize=(6.0, 5.0))
     _mesh_ax, _frame_250_ax = morphometrics_mesh_axes
 
-    _mesh_ax.imshow(label_image, cmap="tab20", interpolation="nearest")
-    for _rib in _morph_mesh:
-        _mesh_ax.plot(
-            [_rib[0], _rib[2]],
-            [_rib[1], _rib[3]],
-            color="deepskyblue",
-            linewidth=0.8,
-            alpha=0.8,
-        )
-    _mesh_ax.plot(
-        _morph_centerline[:, 0],
-        _morph_centerline[:, 1],
-        color="red",
-        linewidth=1.2,
-    )
-    _mesh_ax.set_title(f"Frame 0, label {_morph_label} mesh")
-    _mesh_ax.set_axis_off()
-
-    _frame_250_ax.imshow(demo_masks[0, 250], cmap="tab20", interpolation="nearest")
-    _frame_250_ax.set_title("Frame 250")
-    _frame_250_ax.set_axis_off()
+    for _ax, _image, _table, _title in [
+        (_mesh_ax, label_image, morphometrics_table, "Frame 0"),
+        (_frame_250_ax, _frame_250_image, _frame_250_morphometrics_table, "Frame 250"),
+    ]:
+        _ax.imshow(_image, cmap="tab20", interpolation="nearest")
+        _valid_rows = _table[
+            _table["method_morphometrics"] == "contour_voronoi_rib_intersections"
+        ]
+        for _, _row in _valid_rows.iterrows():
+            _mesh = _row["mesh_px_morphometrics"]
+            _centerline = _row["centerline_xy_morphometrics"]
+            for _rib in _mesh:
+                _ax.plot(
+                    [_rib[0], _rib[2]],
+                    [_rib[1], _rib[3]],
+                    color="deepskyblue",
+                    linewidth=0.7,
+                    alpha=0.65,
+                )
+            _ax.plot(
+                _centerline[:, 0],
+                _centerline[:, 1],
+                color="red",
+                linewidth=1.0,
+                alpha=0.8,
+            )
+        _ax.set_title(f"{_title}: {_valid_rows.shape[0]} meshes")
+        _ax.set_axis_off()
 
     plt.tight_layout()
     plt.show()
