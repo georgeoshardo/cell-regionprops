@@ -80,7 +80,6 @@ def _(label_image, plt):
     mask_ax.set_axis_off()
     plt.tight_layout()
     plt.show()
-    mask_fig
     return
 
 
@@ -98,43 +97,50 @@ def _(label_image, regionprops_table):
 def _(label_image, regionprops_table):
     morphometrics_table = regionprops_table(
         label_image,
-        properties=("label", "morphometrics"),
+        properties=("label", "morphometrics", "area", "centroid", "moments_axis"),
     )
     morphometrics_table
     return (morphometrics_table,)
 
 
 @app.cell
-def _(label_image, morphometrics_table, np, plt):
+def _(demo_masks, label_image, morphometrics_table, plt):
     _valid_morphometrics = morphometrics_table[
         morphometrics_table["method_morphometrics"] == "contour_voronoi_rib_intersections"
     ]
     _morph_row = _valid_morphometrics.iloc[0]
     _morph_label = int(_morph_row["label"])
-    _morph_mask = np.where(label_image == _morph_label, _morph_label, 0)
     _morph_mesh = _morph_row["mesh_px_morphometrics"]
     _morph_centerline = _morph_row["centerline_xy_morphometrics"]
 
-    morphometrics_mesh_fig, morphometrics_mesh_ax = plt.subplots(figsize=(3.0, 5.0))
-    morphometrics_mesh_ax.imshow(_morph_mask, cmap="tab20", interpolation="nearest")
+    morphometrics_mesh_fig, morphometrics_mesh_axes = plt.subplots(1, 2, figsize=(6.0, 5.0))
+    _mesh_ax, _frame_250_ax = morphometrics_mesh_axes
+
+    _mesh_ax.imshow(label_image, cmap="tab20", interpolation="nearest")
     for _rib in _morph_mesh:
-        morphometrics_mesh_ax.plot(
+        _mesh_ax.plot(
             [_rib[0], _rib[2]],
             [_rib[1], _rib[3]],
             color="deepskyblue",
             linewidth=0.8,
             alpha=0.8,
         )
-    morphometrics_mesh_ax.plot(
+    _mesh_ax.plot(
         _morph_centerline[:, 0],
         _morph_centerline[:, 1],
         color="red",
         linewidth=1.2,
     )
-    morphometrics_mesh_ax.set_title(f"Label {_morph_label}: Morphometrics mesh")
-    morphometrics_mesh_ax.set_axis_off()
+    _mesh_ax.set_title(f"Frame 0, label {_morph_label} mesh")
+    _mesh_ax.set_axis_off()
+
+    _frame_250_ax.imshow(demo_masks[0, 250], cmap="tab20", interpolation="nearest")
+    _frame_250_ax.set_title("Frame 250")
+    _frame_250_ax.set_axis_off()
+
     plt.tight_layout()
     plt.show()
+    morphometrics_mesh_fig
     return
 
 
@@ -149,11 +155,12 @@ def _(binary_regionprops_table, label_image):
 
 
 @app.cell
-def _(demo_masks, stack_regionprops_table):
+def _(demo_masks, np, stack_regionprops_table):
+    _label_one_stack = np.where(demo_masks[0:1, :] == 1, 1, 0)
     stack_table = stack_regionprops_table(
-        demo_masks[0:1, :],
+        _label_one_stack,
         index_names=("sample", "frame"),
-        properties=("label", "area"),
+        properties=("label", "moments_axis", "morphometrics"),
     )
     stack_table.head()
     return (stack_table,)
@@ -161,20 +168,31 @@ def _(demo_masks, stack_regionprops_table):
 
 @app.cell
 def _(plt, stack_table):
-    area_trace = (
-        stack_table.groupby(["sample", "frame", "label"], as_index=False)["area_px"]
-        .sum()
-        .sort_values(["sample", "frame"])
+    length_trace = stack_table.sort_values(["sample", "frame"])
+
+    length_fig, length_ax = plt.subplots(figsize=(5.0, 3.0))
+    length_ax.plot(
+        length_trace["frame"],
+        length_trace["length_moments"],
+        marker="o",
+        markersize=2,
+        linewidth=1.0,
+        label="moments",
     )
-
-    mother_cell_area = area_trace.query("label == 1")
-
-    area_fig, area_ax = plt.subplots(figsize=(5.0, 3.0))
-    area_ax.plot(mother_cell_area["frame"], mother_cell_area["area_px"], marker="o")
-    area_ax.set_xlabel("Frame")
-    area_ax.set_ylabel("Total labeled area (px)")
+    length_ax.plot(
+        length_trace["frame"],
+        length_trace["length_morphometrics"],
+        marker="o",
+        markersize=2,
+        linewidth=1.0,
+        label="morphometrics",
+    )
+    length_ax.set_xlabel("Frame")
+    length_ax.set_ylabel("Length (px)")
+    length_ax.legend(frameon=False)
     plt.tight_layout()
     plt.show()
+    length_fig
     return
 
 
