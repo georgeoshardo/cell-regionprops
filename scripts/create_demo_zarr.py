@@ -14,8 +14,6 @@ SOURCE_ZARR = PARENT_REPO_ROOT / "20260307_SB7_exit_snake_V4_1.segmentation_mask
 OUTPUT_ZARR = PACKAGE_ROOT / "examples" / "data" / "demo_label_masks.zarr"
 
 SOURCE_HYPOTHESIS_INDEX = 16
-FRAME_START = 120
-FRAME_STOP = 180
 N_SAMPLES = 8
 RANDOM_SEED = 20260630
 
@@ -29,7 +27,7 @@ def main() -> None:
         source[
             SOURCE_HYPOTHESIS_INDEX,
             sample_indices,
-            FRAME_START:FRAME_STOP,
+            :,
             :,
             :,
         ],
@@ -56,4 +54,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
