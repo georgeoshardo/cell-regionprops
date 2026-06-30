@@ -7,11 +7,10 @@
 ```python
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import zarr
 
-from cell_regionprops import plot_meshes_over_mask, stack_regionprops_table
+from cell_regionprops import stack_regionprops_table
 
 # Load a small real labelled-mask zarr included with the package.
 mask_path = Path("examples/data/demo_label_masks.zarr")
@@ -25,16 +24,6 @@ table = stack_regionprops_table(
     moments_backend="numba",
     morphometrics_n_jobs=-1,
 )
-
-# Plot the contour-rib mesh for one frame.
-colors = plt.get_cmap("tab20")(np.linspace(0, 1, 20))
-colors[0] = [0, 0, 0, 1]
-mask_cmap = plt.matplotlib.colors.ListedColormap(colors)
-
-frame_table = table.query("sample == 0 and frame == 0")
-fig, ax = plt.subplots(figsize=(3.0, 5.0))
-plot_meshes_over_mask(masks[0, 0], frame_table, ax=ax, mask_cmap=mask_cmap)
-plt.show()
 ```
 
 `table.head()`:
@@ -46,5 +35,21 @@ plt.show()
 | 0 | 0 | 3 | 116 | 41.85 | 15.35 | 18.39 | 8.04 | 18.06 | 7.81 | contour_voronoi_rib_intersections |
 | 0 | 0 | 4 | 98 | 57.49 | 18.94 | 15.98 | 7.87 | 15.13 | 7.20 | contour_voronoi_rib_intersections |
 | 0 | 0 | 5 | 106 | 66.46 | 18.42 | 17.31 | 7.88 | 16.63 | 7.28 | contour_voronoi_rib_intersections |
+
+```python
+import matplotlib.pyplot as plt
+
+from cell_regionprops import plot_meshes_over_mask
+
+# Plot the contour-rib mesh for one frame.
+colors = plt.get_cmap("tab20")(np.linspace(0, 1, 20))
+colors[0] = [0, 0, 0, 1]
+mask_cmap = plt.matplotlib.colors.ListedColormap(colors)
+
+frame_table = table.query("sample == 0 and frame == 0")
+fig, ax = plt.subplots(figsize=(3.0, 5.0))
+plot_meshes_over_mask(masks[0, 0], frame_table, ax=ax, mask_cmap=mask_cmap)
+plt.show()
+```
 
 ![Mesh overlay example](docs/assets/readme_mesh_overlay.png)
