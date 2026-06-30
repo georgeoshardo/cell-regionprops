@@ -150,6 +150,31 @@ def test_stack_regionprops_table_numba_matches_label_loop_for_moments() -> None:
     )
 
 
+def test_stack_regionprops_table_numba_uses_small_integer_labels_directly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stack = np.zeros((1, 2, 6, 6), dtype=np.uint8)
+    stack[0, 0, 1:3, 1:4] = 1
+    stack[0, 1, 2:5, 3:5] = 2
+
+    def fail_searchsorted(*args: Any, **kwargs: Any) -> np.ndarray:
+        raise AssertionError("Numba backend should not remap small integer labels.")
+
+    monkeypatch.setattr(core.np, "searchsorted", fail_searchsorted)
+
+    table = stack_regionprops_table(
+        stack,
+        index_names=("sample", "frame"),
+        properties=("label", "area", "centroid", "moments_axis"),
+        moments_backend="numba",
+    )
+
+    assert table[["sample", "frame", "label", "area_px"]].to_dict("records") == [
+        {"sample": 0, "frame": 0, "label": 1, "area_px": 6},
+        {"sample": 0, "frame": 1, "label": 2, "area_px": 6},
+    ]
+
+
 def test_stack_regionprops_table_numba_chunked_matches_label_loop_for_moments() -> None:
     stack = np.zeros((5, 3, 7, 8), dtype=np.int32)
     stack[0, 0, 1:3, 1:5] = 1

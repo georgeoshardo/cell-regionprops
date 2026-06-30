@@ -17,6 +17,7 @@ ExtraProperty: TypeAlias = Callable[[NDArray[np.bool_]], object]
 MomentsBackend: TypeAlias = Literal["label_loop", "bincount", "numba"]
 
 _VECTORIZABLE_PROPERTIES = {"label", "area", "centroid", "moments_axis"}
+_NUMBA_DIRECT_LABEL_MAX_BINS = 10_000_000
 
 
 def _normalise_properties(properties: Iterable[str] | None) -> tuple[str, ...]:
@@ -570,7 +571,7 @@ def _stack_regionprops_table_bincount(
 @njit(parallel=True, cache=False)
 def _numba_label_moments_kernel(
     frames: NDArray[np.int32],
-    n_labels: int,
+    max_label: int,
 ) -> tuple[
     NDArray[np.int64],
     NDArray[np.float64],
@@ -580,12 +581,12 @@ def _numba_label_moments_kernel(
     NDArray[np.float64],
 ]:
     n_frames, height, width = frames.shape
-    area = np.zeros((n_frames, n_labels + 1), dtype=np.int64)
-    sum_x = np.zeros((n_frames, n_labels + 1), dtype=np.float64)
-    sum_y = np.zeros((n_frames, n_labels + 1), dtype=np.float64)
-    sum_x2 = np.zeros((n_frames, n_labels + 1), dtype=np.float64)
-    sum_y2 = np.zeros((n_frames, n_labels + 1), dtype=np.float64)
-    sum_xy = np.zeros((n_frames, n_labels + 1), dtype=np.float64)
+    area = np.zeros((n_frames, max_label + 1), dtype=np.int64)
+    sum_x = np.zeros((n_frames, max_label + 1), dtype=np.float64)
+    sum_y = np.zeros((n_frames, max_label + 1), dtype=np.float64)
+    sum_x2 = np.zeros((n_frames, max_label + 1), dtype=np.float64)
+    sum_y2 = np.zeros((n_frames, max_label + 1), dtype=np.float64)
+    sum_xy = np.zeros((n_frames, max_label + 1), dtype=np.float64)
 
     for frame_index in prange(n_frames):
         for y in range(height):
@@ -605,6 +606,35 @@ def _numba_label_moments_kernel(
     return area, sum_x, sum_y, sum_x2, sum_y2, sum_xy
 
 
+def _numba_moments_columns_to_dataframe(
+    columns: dict[str, NDArray[Any]],
+    *,
+    index_names: tuple[str, ...],
+) -> pd.DataFrame:
+    if not columns:
+        return pd.DataFrame(columns=list(index_names))
+
+    table = pd.DataFrame(columns)
+    sort_columns = [*index_names]
+    if "label" in table.columns:
+        sort_columns.append("label")
+    return table.sort_values(sort_columns).reset_index(drop=True)
+
+
+def _concatenate_column_chunks(
+    column_chunks: list[dict[str, NDArray[Any]]],
+) -> dict[str, NDArray[Any]]:
+    if not column_chunks:
+        return {}
+    column_names = tuple(column_chunks[0])
+    return {
+        column_name: np.concatenate(
+            [chunk[column_name] for chunk in column_chunks],
+        )
+        for column_name in column_names
+    }
+
+
 def _stack_regionprops_table_numba_chunked(
     stack: Any,
     *,
@@ -613,30 +643,25 @@ def _stack_regionprops_table_numba_chunked(
     properties: tuple[str, ...],
     chunk_size: int,
 ) -> pd.DataFrame:
-    tables: list[pd.DataFrame] = []
+    column_chunks: list[dict[str, NDArray[Any]]] = []
     for start in range(0, int(stack.shape[0]), chunk_size):
         stop = min(start + chunk_size, int(stack.shape[0]))
         chunk = _compute_stack_if_needed(stack[start:stop])
-        table = _stack_regionprops_table_numba(
+        columns = _stack_regionprops_table_numba_columns(
             chunk,
             index_names=index_names,
             pixel_size=pixel_size,
             properties=properties,
         )
-        if table.empty:
+        if not columns:
             continue
-        table = table.copy()
-        table[index_names[0]] = table[index_names[0]] + start
-        tables.append(table)
+        columns[index_names[0]] = columns[index_names[0]] + start
+        column_chunks.append(columns)
 
-    if not tables:
-        return pd.DataFrame(columns=list(index_names))
-
-    combined = pd.concat(tables, ignore_index=True)
-    sort_columns = [*index_names]
-    if "label" in combined.columns:
-        sort_columns.append("label")
-    return combined.sort_values(sort_columns).reset_index(drop=True)
+    return _numba_moments_columns_to_dataframe(
+        _concatenate_column_chunks(column_chunks),
+        index_names=index_names,
+    )
 
 
 def _stack_regionprops_table_numba(
@@ -646,65 +671,120 @@ def _stack_regionprops_table_numba(
     pixel_size: float,
     properties: tuple[str, ...],
 ) -> pd.DataFrame:
+    return _numba_moments_columns_to_dataframe(
+        _stack_regionprops_table_numba_columns(
+            stack,
+            index_names=index_names,
+            pixel_size=pixel_size,
+            properties=properties,
+        ),
+        index_names=index_names,
+    )
+
+
+def _stack_regionprops_table_numba_columns(
+    stack: NDArray[np.integer],
+    *,
+    index_names: tuple[str, ...],
+    pixel_size: float,
+    properties: tuple[str, ...],
+) -> dict[str, NDArray[Any]]:
     stack_np = np.asarray(stack)
     leading_shape = stack_np.shape[:-2]
     height, width = stack_np.shape[-2:]
     n_frames = int(np.prod(leading_shape))
+    if np.any(stack_np < 0):
+        raise ValueError("The Numba moments backend requires non-negative labels.")
+
     foreground = stack_np != 0
     if not np.any(foreground):
-        return pd.DataFrame(columns=list(index_names))
+        return {}
 
-    labels = np.unique(stack_np[foreground])
-    remapped = np.zeros(stack_np.shape, dtype=np.int32)
-    remapped[foreground] = np.searchsorted(labels, stack_np[foreground]).astype(np.int32) + 1
-    frames = remapped.reshape((n_frames, height, width))
+    max_label = int(stack_np.max())
+    dense_bin_count = n_frames * (max_label + 1)
+    if dense_bin_count <= _NUMBA_DIRECT_LABEL_MAX_BINS:
+        frames = stack_np.astype(np.int32, copy=False).reshape((n_frames, height, width))
+        label_by_code = np.arange(max_label + 1, dtype=np.int64)
+        area_matrix, sum_x_matrix, sum_y_matrix, sum_x2_matrix, sum_y2_matrix, sum_xy_matrix = (
+            _numba_label_moments_kernel(frames, max_label)
+        )
+    else:
+        foreground_labels = stack_np[foreground]
+        labels, label_codes = np.unique(foreground_labels, return_inverse=True)
+        remapped = np.zeros(stack_np.shape, dtype=np.int32)
+        remapped[foreground] = label_codes.astype(np.int32) + 1
+        frames = remapped.reshape((n_frames, height, width))
+        label_by_code = np.zeros(labels.size + 1, dtype=np.int64)
+        label_by_code[1:] = labels.astype(np.int64)
+        area_matrix, sum_x_matrix, sum_y_matrix, sum_x2_matrix, sum_y2_matrix, sum_xy_matrix = (
+            _numba_label_moments_kernel(frames, int(labels.size))
+        )
 
-    area_matrix, sum_x_matrix, sum_y_matrix, sum_x2_matrix, sum_y2_matrix, sum_xy_matrix = (
-        _numba_label_moments_kernel(frames, int(labels.size))
+    return _numba_moments_columns_from_matrices(
+        area_matrix=area_matrix,
+        sum_x_matrix=sum_x_matrix,
+        sum_y_matrix=sum_y_matrix,
+        sum_x2_matrix=sum_x2_matrix,
+        sum_y2_matrix=sum_y2_matrix,
+        sum_xy_matrix=sum_xy_matrix,
+        label_by_code=label_by_code,
+        leading_shape=leading_shape,
+        index_names=index_names,
+        pixel_size=pixel_size,
+        properties=properties,
     )
 
+
+def _numba_moments_columns_from_matrices(
+    *,
+    area_matrix: NDArray[np.int64],
+    sum_x_matrix: NDArray[np.float64],
+    sum_y_matrix: NDArray[np.float64],
+    sum_x2_matrix: NDArray[np.float64],
+    sum_y2_matrix: NDArray[np.float64],
+    sum_xy_matrix: NDArray[np.float64],
+    label_by_code: NDArray[np.int64],
+    leading_shape: tuple[int, ...],
+    index_names: tuple[str, ...],
+    pixel_size: float,
+    properties: tuple[str, ...],
+) -> dict[str, NDArray[Any]]:
     present_frame_indices, present_label_codes = np.nonzero(area_matrix[:, 1:])
     present_label_codes = present_label_codes + 1
-    unraveled = np.unravel_index(present_frame_indices, leading_shape)
-    rows: list[dict[str, object]] = []
-    for row_offset, (flat_frame, label_code) in enumerate(
-        zip(present_frame_indices, present_label_codes)
-    ):
-        area_px = int(area_matrix[flat_frame, label_code])
-        x_mean = float(sum_x_matrix[flat_frame, label_code] / area_px)
-        y_mean = float(sum_y_matrix[flat_frame, label_code] / area_px)
-        mu20 = float(sum_x2_matrix[flat_frame, label_code] / area_px - x_mean**2)
-        mu02 = float(sum_y2_matrix[flat_frame, label_code] / area_px - y_mean**2)
-        mu11 = float(sum_xy_matrix[flat_frame, label_code] / area_px - x_mean * y_mean)
-        eigenvalue_gap = float(np.sqrt((mu20 - mu02) ** 2 + 4.0 * mu11**2))
-        major_eigenvalue = max((mu20 + mu02 + eigenvalue_gap) / 2.0, 0.0)
-        minor_eigenvalue = max((mu20 + mu02 - eigenvalue_gap) / 2.0, 0.0)
-        length_px = float(4.0 * np.sqrt(major_eigenvalue))
-        width_px = float(4.0 * np.sqrt(minor_eigenvalue))
-        row: dict[str, object] = {
-            name: int(unraveled[axis][row_offset])
-            for axis, name in enumerate(index_names)
-        }
-        for property_name in properties:
-            if property_name == "label":
-                row["label"] = int(labels[label_code - 1])
-            elif property_name == "area":
-                row["area_px"] = area_px
-                row["area"] = area_px * pixel_size**2
-            elif property_name == "centroid":
-                row["centroid_y"] = y_mean
-                row["centroid_x"] = x_mean
-            elif property_name == "moments_axis":
-                row["length_px_moments"] = length_px
-                row["width_px_moments"] = width_px
-                row["length_moments"] = length_px * pixel_size
-                row["width_moments"] = width_px * pixel_size
-            else:
-                raise KeyError(f"Unknown numba property: {property_name}")
-        rows.append(row)
+    if present_frame_indices.size == 0:
+        return {}
 
-    table = pd.DataFrame(rows)
-    sort_columns = [*index_names]
-    if "label" in table.columns:
-        sort_columns.append("label")
-    return table.sort_values(sort_columns).reset_index(drop=True)
+    unraveled = np.unravel_index(present_frame_indices, leading_shape)
+    area_px = area_matrix[present_frame_indices, present_label_codes]
+    x_mean = sum_x_matrix[present_frame_indices, present_label_codes] / area_px
+    y_mean = sum_y_matrix[present_frame_indices, present_label_codes] / area_px
+    mu20 = sum_x2_matrix[present_frame_indices, present_label_codes] / area_px - x_mean**2
+    mu02 = sum_y2_matrix[present_frame_indices, present_label_codes] / area_px - y_mean**2
+    mu11 = sum_xy_matrix[present_frame_indices, present_label_codes] / area_px - x_mean * y_mean
+    eigenvalue_gap = np.sqrt((mu20 - mu02) ** 2 + 4.0 * mu11**2)
+    major_eigenvalue = np.maximum((mu20 + mu02 + eigenvalue_gap) / 2.0, 0.0)
+    minor_eigenvalue = np.maximum((mu20 + mu02 - eigenvalue_gap) / 2.0, 0.0)
+    length_px = 4.0 * np.sqrt(major_eigenvalue)
+    width_px = 4.0 * np.sqrt(minor_eigenvalue)
+
+    columns: dict[str, NDArray[Any]] = {
+        name: np.asarray(unraveled[axis], dtype=np.int64)
+        for axis, name in enumerate(index_names)
+    }
+    for property_name in properties:
+        if property_name == "label":
+            columns["label"] = label_by_code[present_label_codes]
+        elif property_name == "area":
+            columns["area_px"] = area_px
+            columns["area"] = area_px.astype(float) * pixel_size**2
+        elif property_name == "centroid":
+            columns["centroid_y"] = y_mean
+            columns["centroid_x"] = x_mean
+        elif property_name == "moments_axis":
+            columns["length_px_moments"] = length_px
+            columns["width_px_moments"] = width_px
+            columns["length_moments"] = length_px * pixel_size
+            columns["width_moments"] = width_px * pixel_size
+        else:
+            raise KeyError(f"Unknown numba property: {property_name}")
+    return columns
