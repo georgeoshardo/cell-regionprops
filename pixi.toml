@@ -1,0 +1,24 @@
+[workspace]
+name = "cell-regionprops"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[dependencies]
+python = "3.11.*"
+numpy = ">=1.26"
+pandas = ">=2"
+scipy = ">=1.11"
+scikit-image = ">=0.24"
+shapely = ">=2"
+networkx = ">=3"
+zarr = ">=3"
+pytest = ">=8,<9"
+mypy = ">=1.16,<2"
+pydocstyle = ">=6,<7"
+marimo = ">=0.23,<0.24"
+hatchling = ">=1.25"
+
+[pypi-dependencies]
+cell-regionprops = { path = ".", editable = true }
+

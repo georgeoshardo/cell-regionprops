@@ -1,0 +1,31 @@
+[project]
+name = "cell-regionprops"
+version = "0.1.0"
+description = "Cell-focused regionprops-style measurements for labeled masks"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-image",
+    "shapely",
+    "networkx",
+    "zarr",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "marimo", "mypy", "pydocstyle"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cell_regionprops"]
+
+[tool.mypy]
+python_version = "3.11"
+disallow_untyped_defs = true
+ignore_missing_imports = true
+warn_unused_ignores = true
+
