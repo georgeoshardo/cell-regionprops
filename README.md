@@ -63,7 +63,7 @@ plt.tight_layout()
 plt.show()
 ```
 
-![Mesh overlay example](docs/assets/readme_mesh_overlay.png)
+<img src="docs/assets/readme_mesh_overlay.png" alt="Mesh overlay example" width="420">
 
 ```python
 # Compare moment-axis and Voronoi mesh lengths for one label over time.
@@ -90,4 +90,4 @@ plt.tight_layout()
 plt.show()
 ```
 
-![Length trace example](docs/assets/readme_length_trace.png)
+<img src="docs/assets/readme_length_trace.png" alt="Length trace example" width="420">
