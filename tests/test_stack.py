@@ -2,6 +2,7 @@ import numpy as np
 import dask.array as da
 import pandas as pd
 import pytest
+from typing import Any
 
 from cell_regionprops import regionprops_table
 from cell_regionprops import stack_regionprops_table
@@ -118,6 +119,67 @@ def test_stack_regionprops_table_bincount_matches_label_loop_for_moments() -> No
     )
 
 
+def test_stack_regionprops_table_numba_matches_label_loop_for_moments() -> None:
+    stack = np.zeros((2, 3, 7, 8), dtype=np.int32)
+    stack[0, 0, 1:3, 1:5] = 1
+    stack[0, 0, 4:6, 2:7] = 18
+    stack[0, 1, 2:6, 3:5] = 1
+    stack[1, 0, 1:6, 1:3] = 18
+    stack[1, 2, 3:6, 4:7] = 1
+
+    label_loop = stack_regionprops_table(
+        stack,
+        index_names=("sample", "frame"),
+        properties=("label", "area", "centroid", "moments_axis"),
+        moments_backend="label_loop",
+    ).sort_values(["sample", "frame", "label"]).reset_index(drop=True)
+    numba = stack_regionprops_table(
+        stack,
+        index_names=("sample", "frame"),
+        properties=("label", "area", "centroid", "moments_axis"),
+        moments_backend="numba",
+    ).sort_values(["sample", "frame", "label"]).reset_index(drop=True)
+
+    assert numba.columns.tolist() == label_loop.columns.tolist()
+    assert numba[["sample", "frame", "label", "area_px"]].equals(
+        label_loop[["sample", "frame", "label", "area_px"]]
+    )
+    np.testing.assert_allclose(
+        numba.drop(columns=["sample", "frame", "label", "area_px"]).to_numpy(dtype=float),
+        label_loop.drop(columns=["sample", "frame", "label", "area_px"]).to_numpy(dtype=float),
+    )
+
+
+def test_stack_regionprops_table_numba_chunked_matches_label_loop_for_moments() -> None:
+    stack = np.zeros((5, 3, 7, 8), dtype=np.int32)
+    stack[0, 0, 1:3, 1:5] = 1
+    stack[1, 2, 4:6, 2:7] = 18
+    stack[3, 1, 2:6, 3:5] = 1
+    stack[4, 0, 1:6, 1:3] = 18
+
+    label_loop = stack_regionprops_table(
+        stack,
+        index_names=("sample", "frame"),
+        properties=("label", "area", "centroid", "moments_axis"),
+        moments_backend="label_loop",
+    ).sort_values(["sample", "frame", "label"]).reset_index(drop=True)
+    numba = stack_regionprops_table(
+        stack,
+        index_names=("sample", "frame"),
+        properties=("label", "area", "centroid", "moments_axis"),
+        moments_backend="numba",
+        moments_chunk_size=2,
+    ).sort_values(["sample", "frame", "label"]).reset_index(drop=True)
+
+    assert numba[["sample", "frame", "label", "area_px"]].equals(
+        label_loop[["sample", "frame", "label", "area_px"]]
+    )
+    np.testing.assert_allclose(
+        numba.drop(columns=["sample", "frame", "label", "area_px"]).to_numpy(dtype=float),
+        label_loop.drop(columns=["sample", "frame", "label", "area_px"]).to_numpy(dtype=float),
+    )
+
+
 def test_stack_regionprops_table_bincount_merges_with_morphometrics() -> None:
     stack = np.zeros((1, 2, 20, 20), dtype=np.uint8)
     stack[0, 0, 5:15, 7:13] = 1
@@ -128,6 +190,26 @@ def test_stack_regionprops_table_bincount_merges_with_morphometrics() -> None:
         index_names=("sample", "frame"),
         properties=("label", "moments_axis", "morphometrics"),
         moments_backend="bincount",
+        morphometrics_n_jobs=0,
+    )
+
+    assert table["frame"].tolist() == [0, 1]
+    assert table["label"].tolist() == [1, 1]
+    assert table["length_px_moments"].notna().all()
+    assert "length_px_morphometrics" in table.columns
+    assert "method_morphometrics" in table.columns
+
+
+def test_stack_regionprops_table_numba_merges_with_morphometrics() -> None:
+    stack = np.zeros((1, 2, 20, 20), dtype=np.uint8)
+    stack[0, 0, 5:15, 7:13] = 1
+    stack[0, 1, 4:16, 7:13] = 1
+
+    table = stack_regionprops_table(
+        stack,
+        index_names=("sample", "frame"),
+        properties=("label", "moments_axis", "morphometrics"),
+        moments_backend="numba",
         morphometrics_n_jobs=0,
     )
 
@@ -179,7 +261,7 @@ def test_stack_regionprops_table_vectorizes_moments_when_morphometrics_is_reques
     calls: list[tuple[str, ...]] = []
     original = core._stack_regionprops_table_vectorized
 
-    def spy_vectorized(*args, **kwargs):
+    def spy_vectorized(*args: Any, **kwargs: Any) -> pd.DataFrame:
         calls.append(kwargs["properties"])
         return original(*args, **kwargs)
 
@@ -229,4 +311,28 @@ def test_stack_regionprops_table_vectorized_accepts_dask_arrays() -> None:
 
     assert table["frame"].tolist() == [0, 1]
     assert table["area_px"].tolist() == [4, 6]
+    assert table["length_px_moments"].notna().all()
+
+
+def test_stack_regionprops_table_numba_accepts_dask_arrays() -> None:
+    stack_np = np.zeros((2, 2, 5, 5), dtype=np.uint8)
+    stack_np[0, 0, 1:3, 1:3] = 1
+    stack_np[0, 1, 1:4, 1:3] = 1
+    stack_np[1, 0, 2:5, 2:4] = 1
+    stack = da.from_array(stack_np, chunks=(1, 1, 5, 5))
+
+    table = stack_regionprops_table(
+        stack,
+        index_names=("sample", "frame"),
+        properties=("label", "area", "centroid", "moments_axis"),
+        moments_backend="numba",
+        moments_chunk_size=1,
+    )
+
+    assert table[["sample", "frame"]].to_dict("records") == [
+        {"sample": 0, "frame": 0},
+        {"sample": 0, "frame": 1},
+        {"sample": 1, "frame": 0},
+    ]
+    assert table["area_px"].tolist() == [4, 6, 6]
     assert table["length_px_moments"].notna().all()

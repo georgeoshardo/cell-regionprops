@@ -1,4 +1,5 @@
 import numpy as np
+from typing import cast
 
 from cell_regionprops import regionprops_table
 from cell_regionprops.morphometrics_mesh import measure_cell_mesh
@@ -11,11 +12,11 @@ def test_measure_cell_mesh_uses_contour_voronoi_for_simple_cell() -> None:
     result = measure_cell_mesh(mask, pixel_size_um=0.1)
 
     assert result["method"] == "contour_voronoi_rib_intersections"
-    assert result["length_px"] > 0
-    assert result["width_px"] > 0
-    assert result["length_um"] > 0
-    assert result["width_um"] > 0
-    assert result["mesh_px"].shape[1] == 4
+    assert cast(float, result["length_px"]) > 0
+    assert cast(float, result["width_px"]) > 0
+    assert cast(float, result["length_um"]) > 0
+    assert cast(float, result["width_um"]) > 0
+    assert np.asarray(result["mesh_px"]).shape[1] == 4
 
 
 def test_measure_cell_mesh_returns_failed_measurement_for_tiny_masks() -> None:
@@ -25,8 +26,8 @@ def test_measure_cell_mesh_returns_failed_measurement_for_tiny_masks() -> None:
     result = measure_cell_mesh(mask)
 
     assert result["method"] == "contour_voronoi_failed"
-    assert np.isnan(result["length_px"])
-    assert result["mesh_px"].shape == (0, 4)
+    assert np.isnan(cast(float, result["length_px"]))
+    assert np.asarray(result["mesh_px"]).shape == (0, 4)
 
 
 def test_regionprops_table_can_measure_morphometrics_property() -> None:
@@ -42,4 +43,3 @@ def test_regionprops_table_can_measure_morphometrics_property() -> None:
     assert table["volume_morphometrics"].iloc[0] > 0
     assert table["surface_area_morphometrics"].iloc[0] > 0
     assert table["surface_area_to_volume_ratio_morphometrics"].iloc[0] > 0
-

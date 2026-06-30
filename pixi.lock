@@ -183,6 +183,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libxslt-1.1.43-h711ed8c_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libzlib-1.3.2-h25fd6f3_2.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libzopfli-1.0.3-h9c3ff4c_0.tar.bz2
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/llvmlite-0.47.0-py311h41a00d4_1.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/locket-1.0.0-pyhd8ed1ab_0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/linux-64/loro-1.13.1-py311hf6208d2_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/lz4-4.4.5-py311h1c460e0_1.conda
@@ -201,6 +202,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/ncurses-6.6-hdb14827_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/networkx-3.6.1-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/nlohmann_json-3.12.0-h54a6638_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/numba-0.65.1-py311h3c884d5_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/numcodecs-0.16.5-py311hed34c8f_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/numpy-2.4.6-py311h2e04523_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/openjpeg-2.5.4-h55fea9a_0.conda
@@ -776,7 +778,7 @@ packages:
 - pypi: ./
   name: cell-regionprops
   version: 0.1.0
-  sha256: c9fac02dda103c3a06edfcd210bdb779b6f6f9f23fd5732a12cb732d296e6db5
+  sha256: bb806e8e983b26f3494584f6fa62c60189cbffecc219b13bdd0a10aa93a8b8f9
   requires_dist:
   - numpy
   - pandas
@@ -787,6 +789,7 @@ packages:
   - zarr
   - dask
   - joblib
+  - numba
   - pytest ; extra == 'dev'
   - marimo ; extra == 'dev'
   - mypy ; extra == 'dev'
@@ -2724,6 +2727,23 @@ packages:
   purls: []
   size: 168074
   timestamp: 1607309189989
+- conda: https://conda.anaconda.org/conda-forge/linux-64/llvmlite-0.47.0-py311h41a00d4_1.conda
+  sha256: 689cc23dc0f80c008094931aaa54ec229dd9dbabd169e825e13ea262d5e6dade
+  md5: 62d9d69ab00067a2b3cdf60407f4c491
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - libgcc >=14
+  - libstdcxx >=14
+  - libzlib >=1.3.2,<2.0a0
+  - python >=3.11,<3.12.0a0
+  - python_abi 3.11.* *_cp311
+  - zstd >=1.5.7,<1.6.0a0
+  license: BSD-2-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/llvmlite?source=hash-mapping
+  size: 34108807
+  timestamp: 1776076742653
 - conda: https://conda.anaconda.org/conda-forge/noarch/locket-1.0.0-pyhd8ed1ab_0.tar.bz2
   sha256: 9afe0b5cfa418e8bdb30d8917c5a6cec10372b037924916f1f85b9f4899a67a6
   md5: 91e27ef3d05cc772ce627e51cff111c4
@@ -3002,6 +3022,32 @@ packages:
   purls: []
   size: 136216
   timestamp: 1758194284857
+- conda: https://conda.anaconda.org/conda-forge/linux-64/numba-0.65.1-py311h3c884d5_1.conda
+  sha256: 5f6eacaba962cadba6da07756138492291c837cc83ac4d6d51224db6ac596953
+  md5: 89bb99267eee107ffb38f37fba4c973f
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - _openmp_mutex >=4.5
+  - libgcc >=14
+  - libstdcxx >=14
+  - llvmlite >=0.47.0,<0.48.0a0
+  - numpy >=1.22.3,<2.5
+  - numpy >=1.23,<3
+  - python >=3.11,<3.12.0a0
+  - python_abi 3.11.* *_cp311
+  constrains:
+  - tbb >=2021.6.0
+  - cuda-version >=11.2
+  - cuda-python >=11.6
+  - scipy >=1.0
+  - libopenblas !=0.3.6
+  - cudatoolkit >=11.2
+  license: BSD-2-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/numba?source=hash-mapping
+  size: 5866836
+  timestamp: 1778390477250
 - conda: https://conda.anaconda.org/conda-forge/linux-64/numcodecs-0.16.5-py311hed34c8f_0.conda
   sha256: 4966f599ce228b4111322e1e3a93a594d4f75484fdfebb0b40fd2ab3bcc6c354
   md5: 8096e6b9a5caf339c473be92e3dd23e5

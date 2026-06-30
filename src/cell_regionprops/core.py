@@ -8,12 +8,13 @@ import dask.array as da
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
+from numba import njit, prange
 from numpy.typing import ArrayLike, NDArray
 
 from cell_regionprops.registry import DEFAULT_PROPERTIES, PROPERTY_REGISTRY
 
 ExtraProperty: TypeAlias = Callable[[NDArray[np.bool_]], object]
-MomentsBackend: TypeAlias = Literal["label_loop", "bincount"]
+MomentsBackend: TypeAlias = Literal["label_loop", "bincount", "numba"]
 
 _VECTORIZABLE_PROPERTIES = {"label", "area", "centroid", "moments_axis"}
 
@@ -155,6 +156,7 @@ def stack_regionprops_table(
     properties: Iterable[str] | None = None,
     extra_properties: Mapping[str, ExtraProperty] | None = None,
     moments_backend: MomentsBackend = "label_loop",
+    moments_chunk_size: int | None = None,
     morphometrics_n_jobs: int = -1,
 ) -> pd.DataFrame:
     """Measure labels in every 2D frame of a stack.
@@ -179,7 +181,12 @@ def stack_regionprops_table(
         moments_backend: Vectorized backend for label, area, centroid, and
             moment-axis measurements. `"label_loop"` loops over label values;
             `"bincount"` computes grouped reductions over all labels in one
-            pass. Defaults to `"label_loop"`.
+            pass; `"numba"` uses a parallel compiled loop over 2D frames.
+            Defaults to `"label_loop"`.
+        moments_chunk_size: Optional number of first-axis slices per Numba
+            chunk. Dask arrays using the Numba backend are chunked by default
+            along the first leading axis; NumPy arrays are processed as one
+            batch unless this is set.
         morphometrics_n_jobs: Number of parallel workers for non-vectorized
             morphometrics and extra-property measurements. `-1` uses all cores;
             `0` and `1` run serially. Defaults to `-1`.
@@ -197,8 +204,10 @@ def stack_regionprops_table(
         raise ValueError("`label_stack` must have at least three dimensions.")
     if not np.issubdtype(stack.dtype, np.integer):
         raise TypeError("`label_stack` must contain integer labels.")
-    if moments_backend not in {"label_loop", "bincount"}:
-        raise ValueError("`moments_backend` must be 'label_loop' or 'bincount'.")
+    if moments_backend not in {"label_loop", "bincount", "numba"}:
+        raise ValueError("`moments_backend` must be 'label_loop', 'bincount', or 'numba'.")
+    if moments_chunk_size is not None and moments_chunk_size < 1:
+        raise ValueError("`moments_chunk_size` must be a positive integer or None.")
 
     leading_shape = stack.shape[:-2]
     names = tuple(index_names) if index_names is not None else tuple(
@@ -232,6 +241,7 @@ def stack_regionprops_table(
             pixel_size=pixel_size,
             properties=vectorized_properties_for_compute,
             moments_backend=moments_backend,
+            moments_chunk_size=moments_chunk_size,
         )
         if vectorized_properties
         else pd.DataFrame()
@@ -343,10 +353,27 @@ def _stack_regionprops_table_vectorized(
     pixel_size: float,
     properties: tuple[str, ...],
     moments_backend: MomentsBackend,
+    moments_chunk_size: int | None,
 ) -> pd.DataFrame:
     if moments_backend == "bincount":
         return _stack_regionprops_table_bincount(
             _compute_stack_if_needed(stack),
+            index_names=index_names,
+            pixel_size=pixel_size,
+            properties=properties,
+        )
+    if moments_backend == "numba":
+        if moments_chunk_size is not None or _is_dask_array(stack):
+            chunk_size = moments_chunk_size or min(int(stack.shape[0]), 64)
+            return _stack_regionprops_table_numba_chunked(
+                stack,
+                index_names=index_names,
+                pixel_size=pixel_size,
+                properties=properties,
+                chunk_size=chunk_size,
+            )
+        return _stack_regionprops_table_numba(
+            np.asarray(stack),
             index_names=index_names,
             pixel_size=pixel_size,
             properties=properties,
@@ -531,6 +558,149 @@ def _stack_regionprops_table_bincount(
                 row["width_moments"] = width_px * pixel_size
             else:
                 raise KeyError(f"Unknown bincount property: {property_name}")
+        rows.append(row)
+
+    table = pd.DataFrame(rows)
+    sort_columns = [*index_names]
+    if "label" in table.columns:
+        sort_columns.append("label")
+    return table.sort_values(sort_columns).reset_index(drop=True)
+
+
+@njit(parallel=True, cache=False)
+def _numba_label_moments_kernel(
+    frames: NDArray[np.int32],
+    n_labels: int,
+) -> tuple[
+    NDArray[np.int64],
+    NDArray[np.float64],
+    NDArray[np.float64],
+    NDArray[np.float64],
+    NDArray[np.float64],
+    NDArray[np.float64],
+]:
+    n_frames, height, width = frames.shape
+    area = np.zeros((n_frames, n_labels + 1), dtype=np.int64)
+    sum_x = np.zeros((n_frames, n_labels + 1), dtype=np.float64)
+    sum_y = np.zeros((n_frames, n_labels + 1), dtype=np.float64)
+    sum_x2 = np.zeros((n_frames, n_labels + 1), dtype=np.float64)
+    sum_y2 = np.zeros((n_frames, n_labels + 1), dtype=np.float64)
+    sum_xy = np.zeros((n_frames, n_labels + 1), dtype=np.float64)
+
+    for frame_index in prange(n_frames):
+        for y in range(height):
+            y_float = float(y)
+            for x in range(width):
+                label = frames[frame_index, y, x]
+                if label == 0:
+                    continue
+                x_float = float(x)
+                area[frame_index, label] += 1
+                sum_x[frame_index, label] += x_float
+                sum_y[frame_index, label] += y_float
+                sum_x2[frame_index, label] += x_float * x_float
+                sum_y2[frame_index, label] += y_float * y_float
+                sum_xy[frame_index, label] += x_float * y_float
+
+    return area, sum_x, sum_y, sum_x2, sum_y2, sum_xy
+
+
+def _stack_regionprops_table_numba_chunked(
+    stack: Any,
+    *,
+    index_names: tuple[str, ...],
+    pixel_size: float,
+    properties: tuple[str, ...],
+    chunk_size: int,
+) -> pd.DataFrame:
+    tables: list[pd.DataFrame] = []
+    for start in range(0, int(stack.shape[0]), chunk_size):
+        stop = min(start + chunk_size, int(stack.shape[0]))
+        chunk = _compute_stack_if_needed(stack[start:stop])
+        table = _stack_regionprops_table_numba(
+            chunk,
+            index_names=index_names,
+            pixel_size=pixel_size,
+            properties=properties,
+        )
+        if table.empty:
+            continue
+        table = table.copy()
+        table[index_names[0]] = table[index_names[0]] + start
+        tables.append(table)
+
+    if not tables:
+        return pd.DataFrame(columns=list(index_names))
+
+    combined = pd.concat(tables, ignore_index=True)
+    sort_columns = [*index_names]
+    if "label" in combined.columns:
+        sort_columns.append("label")
+    return combined.sort_values(sort_columns).reset_index(drop=True)
+
+
+def _stack_regionprops_table_numba(
+    stack: NDArray[np.integer],
+    *,
+    index_names: tuple[str, ...],
+    pixel_size: float,
+    properties: tuple[str, ...],
+) -> pd.DataFrame:
+    stack_np = np.asarray(stack)
+    leading_shape = stack_np.shape[:-2]
+    height, width = stack_np.shape[-2:]
+    n_frames = int(np.prod(leading_shape))
+    foreground = stack_np != 0
+    if not np.any(foreground):
+        return pd.DataFrame(columns=list(index_names))
+
+    labels = np.unique(stack_np[foreground])
+    remapped = np.zeros(stack_np.shape, dtype=np.int32)
+    remapped[foreground] = np.searchsorted(labels, stack_np[foreground]).astype(np.int32) + 1
+    frames = remapped.reshape((n_frames, height, width))
+
+    area_matrix, sum_x_matrix, sum_y_matrix, sum_x2_matrix, sum_y2_matrix, sum_xy_matrix = (
+        _numba_label_moments_kernel(frames, int(labels.size))
+    )
+
+    present_frame_indices, present_label_codes = np.nonzero(area_matrix[:, 1:])
+    present_label_codes = present_label_codes + 1
+    unraveled = np.unravel_index(present_frame_indices, leading_shape)
+    rows: list[dict[str, object]] = []
+    for row_offset, (flat_frame, label_code) in enumerate(
+        zip(present_frame_indices, present_label_codes)
+    ):
+        area_px = int(area_matrix[flat_frame, label_code])
+        x_mean = float(sum_x_matrix[flat_frame, label_code] / area_px)
+        y_mean = float(sum_y_matrix[flat_frame, label_code] / area_px)
+        mu20 = float(sum_x2_matrix[flat_frame, label_code] / area_px - x_mean**2)
+        mu02 = float(sum_y2_matrix[flat_frame, label_code] / area_px - y_mean**2)
+        mu11 = float(sum_xy_matrix[flat_frame, label_code] / area_px - x_mean * y_mean)
+        eigenvalue_gap = float(np.sqrt((mu20 - mu02) ** 2 + 4.0 * mu11**2))
+        major_eigenvalue = max((mu20 + mu02 + eigenvalue_gap) / 2.0, 0.0)
+        minor_eigenvalue = max((mu20 + mu02 - eigenvalue_gap) / 2.0, 0.0)
+        length_px = float(4.0 * np.sqrt(major_eigenvalue))
+        width_px = float(4.0 * np.sqrt(minor_eigenvalue))
+        row: dict[str, object] = {
+            name: int(unraveled[axis][row_offset])
+            for axis, name in enumerate(index_names)
+        }
+        for property_name in properties:
+            if property_name == "label":
+                row["label"] = int(labels[label_code - 1])
+            elif property_name == "area":
+                row["area_px"] = area_px
+                row["area"] = area_px * pixel_size**2
+            elif property_name == "centroid":
+                row["centroid_y"] = y_mean
+                row["centroid_x"] = x_mean
+            elif property_name == "moments_axis":
+                row["length_px_moments"] = length_px
+                row["width_px_moments"] = width_px
+                row["length_moments"] = length_px * pixel_size
+                row["width_moments"] = width_px * pixel_size
+            else:
+                raise KeyError(f"Unknown numba property: {property_name}")
         rows.append(row)
 
     table = pd.DataFrame(rows)

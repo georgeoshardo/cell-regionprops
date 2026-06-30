@@ -13,6 +13,7 @@ dependencies = [
     "zarr",
     "dask",
     "joblib",
+    "numba",
 ]
 
 [project.optional-dependencies]
