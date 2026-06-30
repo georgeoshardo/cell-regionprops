@@ -37,6 +37,7 @@ def _():
         binary_regionprops_table,
         mo,
         np,
+        pd,
         plt,
         regionprops_table,
         stack_regionprops_table,
@@ -226,6 +227,62 @@ def _(plt, stack_table):
     length_ax.legend(frameon=False)
     plt.tight_layout()
     length_fig
+    return
+
+
+@app.cell
+def _(demo_masks, np, pd, stack_regionprops_table):
+    vectorized_stack_table = stack_regionprops_table(
+        demo_masks[:1, :50],
+        index_names=("sample", "frame"),
+        properties=("label", "area", "centroid", "moments_axis"),
+        execution="vectorized",
+    )
+
+    loop_stack_table = stack_regionprops_table(
+        demo_masks[:1, :50],
+        index_names=("sample", "frame"),
+        properties=("label", "area", "centroid", "moments_axis"),
+        execution="loop",
+    )
+
+    _vectorized_sorted = vectorized_stack_table.sort_values(
+        ["sample", "frame", "label"]
+    ).reset_index(drop=True)
+    _loop_sorted = loop_stack_table.sort_values(
+        ["sample", "frame", "label"]
+    ).reset_index(drop=True)
+
+    vectorized_stack_matches_loop = (
+        _vectorized_sorted[["sample", "frame", "label", "area_px"]].equals(
+            _loop_sorted[["sample", "frame", "label", "area_px"]]
+        )
+        and np.allclose(
+            _vectorized_sorted[
+                ["centroid_y", "centroid_x", "length_px_moments", "width_px_moments"]
+            ],
+            _loop_sorted[
+                ["centroid_y", "centroid_x", "length_px_moments", "width_px_moments"]
+            ],
+            equal_nan=True,
+        )
+    )
+
+    vectorized_stack_summary = pd.DataFrame(
+        [
+            {
+                "execution": "vectorized",
+                "rows": len(vectorized_stack_table),
+                "matches_loop": vectorized_stack_matches_loop,
+            },
+            {
+                "execution": "loop",
+                "rows": len(loop_stack_table),
+                "matches_loop": True,
+            },
+        ]
+    )
+    vectorized_stack_summary
     return
 
 
