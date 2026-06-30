@@ -2,6 +2,10 @@
 
 `regionprops_table`-style measurements for labeled masks of cells, including a reimplementation of Voronoi mesh-based cell morphometrics for labeled microscopy masks as demonstrated in [Ursell et al](https://doi.org/10.1186/s12915-017-0348-8).
 
+## Install:
+
+`pip install git+https://github.com/georgeoshardo/cell-regionprops.git`
+
 ## Tiny Example
 
 ```python
