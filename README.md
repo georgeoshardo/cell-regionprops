@@ -64,3 +64,30 @@ plt.show()
 ```
 
 ![Mesh overlay example](docs/assets/readme_mesh_overlay.png)
+
+```python
+# Compare moment-axis and Voronoi mesh lengths for one label over time.
+length_trace = (
+    table.query("sample == 0 and label == 1")
+    .sort_values("frame")
+)
+
+length_fig, length_ax = plt.subplots(figsize=(4.0, 2.0))
+length_ax.plot(
+    length_trace["frame"],
+    length_trace["length_moments"],
+    label="moments",
+)
+length_ax.plot(
+    length_trace["frame"],
+    length_trace["length_morphometrics"],
+    label="morphometrics",
+)
+length_ax.set_xlabel("Frame")
+length_ax.set_ylabel("Length (um)")
+length_ax.legend(frameon=False)
+plt.tight_layout()
+plt.show()
+```
+
+![Length trace example](docs/assets/readme_length_trace.png)
