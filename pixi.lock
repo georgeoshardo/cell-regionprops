@@ -778,7 +778,7 @@ packages:
 - pypi: ./
   name: cell-regionprops
   version: 0.1.0
-  sha256: bb806e8e983b26f3494584f6fa62c60189cbffecc219b13bdd0a10aa93a8b8f9
+  sha256: 039149d510e3648c4c707b5f26cf946ee81c7bacaf0c1047c30b6780b335a47f
   requires_dist:
   - numpy
   - pandas
@@ -794,6 +794,7 @@ packages:
   - marimo ; extra == 'dev'
   - mypy ; extra == 'dev'
   - pydocstyle ; extra == 'dev'
+  - matplotlib ; extra == 'dev'
   - matplotlib ; extra == 'demo'
   requires_python: '>=3.11'
   editable: true

@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "marimo", "mypy", "pydocstyle"]
+dev = ["pytest", "marimo", "mypy", "pydocstyle", "matplotlib"]
 demo = ["matplotlib"]
 
 [build-system]
