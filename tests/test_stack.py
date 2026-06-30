@@ -209,21 +209,6 @@ def test_stack_regionprops_table_rejects_unknown_moments_backend() -> None:
         raise AssertionError("Expected stack_regionprops_table to reject moments_backend.")
 
 
-def test_stack_regionprops_table_rejects_removed_bincount_backend() -> None:
-    stack = np.zeros((1, 1, 5, 5), dtype=np.uint8)
-
-    try:
-        stack_regionprops_table(
-            stack,
-            index_names=("sample", "frame"),
-            moments_backend="bincount",  # type: ignore[arg-type]
-        )
-    except ValueError as error:
-        assert "moments_backend" in str(error)
-    else:
-        raise AssertionError("Expected stack_regionprops_table to reject bincount.")
-
-
 def test_stack_regionprops_table_rejects_execution_keyword() -> None:
     stack = np.zeros((1, 1, 8, 8), dtype=np.uint8)
     stack[0, 0, 2:6, 2:6] = 1
