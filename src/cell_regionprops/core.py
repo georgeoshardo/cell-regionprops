@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Iterable, Mapping, TypeAlias
+from typing import Callable, Iterable, Mapping, Sequence, TypeAlias
 
 import numpy as np
 import pandas as pd
@@ -137,3 +137,67 @@ def binary_regionprops_table(
         extra_properties=extra_properties,
     )
 
+
+def stack_regionprops_table(
+    label_stack: ArrayLike,
+    *,
+    index_names: Sequence[str] | None = None,
+    pixel_size: float = 1.0,
+    properties: Iterable[str] | None = None,
+    extra_properties: Mapping[str, ExtraProperty] | None = None,
+) -> pd.DataFrame:
+    """Measure labels in every 2D frame of a stack.
+
+    The last two axes are interpreted as `y, x`; all leading axes are iterated
+    and copied into index columns. Empty frames contribute no rows unless
+    labels are requested by calling `regionprops_table` directly.
+
+    Args:
+        label_stack: Integer labeled array with shape `(..., y, x)`.
+        index_names: Optional names for the leading stack axes. Defaults to
+            `axis_0`, `axis_1`, and so on.
+        pixel_size: Size of one pixel in physical units. Defaults to 1.0.
+        properties: Names of built-in properties to compute. Defaults to all
+            built-in properties.
+        extra_properties: Additional named functions that receive each binary
+            object mask and return one scalar-like value.
+
+    Returns:
+        A dataframe containing index columns followed by measurement columns.
+
+    Raises:
+        TypeError: If `label_stack` is not integer labeled.
+        ValueError: If `label_stack` has fewer than three dimensions or the
+            number of `index_names` does not match the leading axes.
+    """
+    stack = np.asarray(label_stack)
+    if stack.ndim < 3:
+        raise ValueError("`label_stack` must have at least three dimensions.")
+    if not np.issubdtype(stack.dtype, np.integer):
+        raise TypeError("`label_stack` must contain integer labels.")
+
+    leading_shape = stack.shape[:-2]
+    names = tuple(index_names) if index_names is not None else tuple(
+        f"axis_{axis}" for axis in range(len(leading_shape))
+    )
+    if len(names) != len(leading_shape):
+        raise ValueError("`index_names` must match the number of leading axes.")
+
+    tables: list[pd.DataFrame] = []
+    for index in np.ndindex(leading_shape):
+        frame = stack[index]
+        table = regionprops_table(
+            frame,
+            pixel_size=pixel_size,
+            properties=properties,
+            extra_properties=extra_properties,
+        )
+        if table.empty:
+            continue
+        for name, value in reversed(list(zip(names, index))):
+            table.insert(0, name, value)
+        tables.append(table)
+
+    if not tables:
+        return pd.DataFrame(columns=list(names))
+    return pd.concat(tables, ignore_index=True)
