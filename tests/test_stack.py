@@ -87,6 +87,72 @@ def test_stack_regionprops_table_moments_match_single_frame_table() -> None:
     )
 
 
+def test_stack_regionprops_table_bincount_matches_label_loop_for_moments() -> None:
+    stack = np.zeros((2, 3, 7, 8), dtype=np.int32)
+    stack[0, 0, 1:3, 1:5] = 1
+    stack[0, 0, 4:6, 2:7] = 1000
+    stack[0, 1, 2:6, 3:5] = 1
+    stack[1, 0, 1:6, 1:3] = 1000
+    stack[1, 2, 3:6, 4:7] = 1
+
+    label_loop = stack_regionprops_table(
+        stack,
+        index_names=("sample", "frame"),
+        properties=("label", "area", "centroid", "moments_axis"),
+        moments_backend="label_loop",
+    ).sort_values(["sample", "frame", "label"]).reset_index(drop=True)
+    bincount = stack_regionprops_table(
+        stack,
+        index_names=("sample", "frame"),
+        properties=("label", "area", "centroid", "moments_axis"),
+        moments_backend="bincount",
+    ).sort_values(["sample", "frame", "label"]).reset_index(drop=True)
+
+    assert bincount.columns.tolist() == label_loop.columns.tolist()
+    assert bincount[["sample", "frame", "label", "area_px"]].equals(
+        label_loop[["sample", "frame", "label", "area_px"]]
+    )
+    np.testing.assert_allclose(
+        bincount.drop(columns=["sample", "frame", "label", "area_px"]).to_numpy(dtype=float),
+        label_loop.drop(columns=["sample", "frame", "label", "area_px"]).to_numpy(dtype=float),
+    )
+
+
+def test_stack_regionprops_table_bincount_merges_with_morphometrics() -> None:
+    stack = np.zeros((1, 2, 20, 20), dtype=np.uint8)
+    stack[0, 0, 5:15, 7:13] = 1
+    stack[0, 1, 4:16, 7:13] = 1
+
+    table = stack_regionprops_table(
+        stack,
+        index_names=("sample", "frame"),
+        properties=("label", "moments_axis", "morphometrics"),
+        moments_backend="bincount",
+        morphometrics_n_jobs=0,
+    )
+
+    assert table["frame"].tolist() == [0, 1]
+    assert table["label"].tolist() == [1, 1]
+    assert table["length_px_moments"].notna().all()
+    assert "length_px_morphometrics" in table.columns
+    assert "method_morphometrics" in table.columns
+
+
+def test_stack_regionprops_table_rejects_unknown_moments_backend() -> None:
+    stack = np.zeros((1, 1, 5, 5), dtype=np.uint8)
+
+    try:
+        stack_regionprops_table(
+            stack,
+            index_names=("sample", "frame"),
+            moments_backend="not-a-backend",  # type: ignore[arg-type]
+        )
+    except ValueError as error:
+        assert "moments_backend" in str(error)
+    else:
+        raise AssertionError("Expected stack_regionprops_table to reject moments_backend.")
+
+
 def test_stack_regionprops_table_rejects_execution_keyword() -> None:
     stack = np.zeros((1, 1, 8, 8), dtype=np.uint8)
     stack[0, 0, 2:6, 2:6] = 1

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, Mapping, Sequence, TypeAlias
+from typing import Any, Callable, Iterable, Literal, Mapping, Sequence, TypeAlias
 
 import dask.array as da
 import numpy as np
@@ -13,6 +13,7 @@ from numpy.typing import ArrayLike, NDArray
 from cell_regionprops.registry import DEFAULT_PROPERTIES, PROPERTY_REGISTRY
 
 ExtraProperty: TypeAlias = Callable[[NDArray[np.bool_]], object]
+MomentsBackend: TypeAlias = Literal["label_loop", "bincount"]
 
 _VECTORIZABLE_PROPERTIES = {"label", "area", "centroid", "moments_axis"}
 
@@ -153,6 +154,7 @@ def stack_regionprops_table(
     pixel_size: float = 1.0,
     properties: Iterable[str] | None = None,
     extra_properties: Mapping[str, ExtraProperty] | None = None,
+    moments_backend: MomentsBackend = "label_loop",
     morphometrics_n_jobs: int = -1,
 ) -> pd.DataFrame:
     """Measure labels in every 2D frame of a stack.
@@ -174,6 +176,10 @@ def stack_regionprops_table(
             built-in properties.
         extra_properties: Additional named functions that receive each binary
             object mask and return one scalar-like value.
+        moments_backend: Vectorized backend for label, area, centroid, and
+            moment-axis measurements. `"label_loop"` loops over label values;
+            `"bincount"` computes grouped reductions over all labels in one
+            pass. Defaults to `"label_loop"`.
         morphometrics_n_jobs: Number of parallel workers for non-vectorized
             morphometrics and extra-property measurements. `-1` uses all cores;
             `0` and `1` run serially. Defaults to `-1`.
@@ -191,6 +197,8 @@ def stack_regionprops_table(
         raise ValueError("`label_stack` must have at least three dimensions.")
     if not np.issubdtype(stack.dtype, np.integer):
         raise TypeError("`label_stack` must contain integer labels.")
+    if moments_backend not in {"label_loop", "bincount"}:
+        raise ValueError("`moments_backend` must be 'label_loop' or 'bincount'.")
 
     leading_shape = stack.shape[:-2]
     names = tuple(index_names) if index_names is not None else tuple(
@@ -210,13 +218,20 @@ def stack_regionprops_table(
         for property_name in selected_properties
         if property_name not in _VECTORIZABLE_PROPERTIES
     )
+    vectorized_properties_for_compute = (
+        ("label", *vectorized_properties)
+        if (per_object_properties or extra_properties is not None)
+        and "label" not in vectorized_properties
+        else vectorized_properties
+    )
 
     vectorized_table = (
         _stack_regionprops_table_vectorized(
             stack,
             index_names=names,
             pixel_size=pixel_size,
-            properties=vectorized_properties,
+            properties=vectorized_properties_for_compute,
+            moments_backend=moments_backend,
         )
         if vectorized_properties
         else pd.DataFrame()
@@ -327,6 +342,29 @@ def _stack_regionprops_table_vectorized(
     index_names: tuple[str, ...],
     pixel_size: float,
     properties: tuple[str, ...],
+    moments_backend: MomentsBackend,
+) -> pd.DataFrame:
+    if moments_backend == "bincount":
+        return _stack_regionprops_table_bincount(
+            _compute_stack_if_needed(stack),
+            index_names=index_names,
+            pixel_size=pixel_size,
+            properties=properties,
+        )
+    return _stack_regionprops_table_label_loop(
+        stack,
+        index_names=index_names,
+        pixel_size=pixel_size,
+        properties=properties,
+    )
+
+
+def _stack_regionprops_table_label_loop(
+    stack: Any,
+    *,
+    index_names: tuple[str, ...],
+    pixel_size: float,
+    properties: tuple[str, ...],
 ) -> pd.DataFrame:
     leading_shape = stack.shape[:-2]
     height, width = stack.shape[-2:]
@@ -410,6 +448,92 @@ def _stack_regionprops_table_vectorized(
     table = pd.DataFrame(rows)
     if table.empty:
         return pd.DataFrame(columns=list(index_names))
+    sort_columns = [*index_names]
+    if "label" in table.columns:
+        sort_columns.append("label")
+    return table.sort_values(sort_columns).reset_index(drop=True)
+
+
+def _stack_regionprops_table_bincount(
+    stack: NDArray[np.integer],
+    *,
+    index_names: tuple[str, ...],
+    pixel_size: float,
+    properties: tuple[str, ...],
+) -> pd.DataFrame:
+    leading_shape = stack.shape[:-2]
+    height, width = stack.shape[-2:]
+    n_frames = int(np.prod(leading_shape))
+    frames = stack.reshape((n_frames, height, width))
+    flat_labels = frames.reshape(-1)
+    foreground = flat_labels != 0
+    if not np.any(foreground):
+        return pd.DataFrame(columns=list(index_names))
+
+    frame_indices = np.repeat(np.arange(n_frames), height * width)[foreground]
+    labels, label_codes = np.unique(flat_labels[foreground], return_inverse=True)
+    dense_label_count = labels.size
+    combined_keys = frame_indices * dense_label_count + label_codes
+    bin_count = n_frames * dense_label_count
+
+    y_grid, x_grid = np.indices((height, width), dtype=float)
+    x_values = np.tile(x_grid.ravel(), n_frames)[foreground]
+    y_values = np.tile(y_grid.ravel(), n_frames)[foreground]
+
+    area = np.bincount(combined_keys, minlength=bin_count)
+    sum_x = np.bincount(combined_keys, weights=x_values, minlength=bin_count)
+    sum_y = np.bincount(combined_keys, weights=y_values, minlength=bin_count)
+    sum_x2 = np.bincount(combined_keys, weights=x_values**2, minlength=bin_count)
+    sum_y2 = np.bincount(combined_keys, weights=y_values**2, minlength=bin_count)
+    sum_xy = np.bincount(combined_keys, weights=x_values * y_values, minlength=bin_count)
+
+    area_matrix = area.reshape((n_frames, dense_label_count))
+    sum_x_matrix = sum_x.reshape((n_frames, dense_label_count))
+    sum_y_matrix = sum_y.reshape((n_frames, dense_label_count))
+    sum_x2_matrix = sum_x2.reshape((n_frames, dense_label_count))
+    sum_y2_matrix = sum_y2.reshape((n_frames, dense_label_count))
+    sum_xy_matrix = sum_xy.reshape((n_frames, dense_label_count))
+
+    present_frame_indices, present_label_codes = np.nonzero(area_matrix)
+    unraveled = np.unravel_index(present_frame_indices, leading_shape)
+    rows: list[dict[str, object]] = []
+    for row_offset, (flat_frame, label_code) in enumerate(
+        zip(present_frame_indices, present_label_codes)
+    ):
+        area_px = int(area_matrix[flat_frame, label_code])
+        x_mean = float(sum_x_matrix[flat_frame, label_code] / area_px)
+        y_mean = float(sum_y_matrix[flat_frame, label_code] / area_px)
+        mu20 = float(sum_x2_matrix[flat_frame, label_code] / area_px - x_mean**2)
+        mu02 = float(sum_y2_matrix[flat_frame, label_code] / area_px - y_mean**2)
+        mu11 = float(sum_xy_matrix[flat_frame, label_code] / area_px - x_mean * y_mean)
+        eigenvalue_gap = float(np.sqrt((mu20 - mu02) ** 2 + 4.0 * mu11**2))
+        major_eigenvalue = max((mu20 + mu02 + eigenvalue_gap) / 2.0, 0.0)
+        minor_eigenvalue = max((mu20 + mu02 - eigenvalue_gap) / 2.0, 0.0)
+        length_px = float(4.0 * np.sqrt(major_eigenvalue))
+        width_px = float(4.0 * np.sqrt(minor_eigenvalue))
+        row: dict[str, object] = {
+            name: int(unraveled[axis][row_offset])
+            for axis, name in enumerate(index_names)
+        }
+        for property_name in properties:
+            if property_name == "label":
+                row["label"] = int(labels[label_code])
+            elif property_name == "area":
+                row["area_px"] = area_px
+                row["area"] = area_px * pixel_size**2
+            elif property_name == "centroid":
+                row["centroid_y"] = y_mean
+                row["centroid_x"] = x_mean
+            elif property_name == "moments_axis":
+                row["length_px_moments"] = length_px
+                row["width_px_moments"] = width_px
+                row["length_moments"] = length_px * pixel_size
+                row["width_moments"] = width_px * pixel_size
+            else:
+                raise KeyError(f"Unknown bincount property: {property_name}")
+        rows.append(row)
+
+    table = pd.DataFrame(rows)
     sort_columns = [*index_names]
     if "label" in table.columns:
         sort_columns.append("label")
