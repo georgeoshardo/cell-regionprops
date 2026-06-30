@@ -28,16 +28,21 @@ def _():
 
     from cell_regionprops import (
         binary_regionprops_table,
+        plot_meshes_over_mask,
         regionprops_table,
         stack_regionprops_table,
     )
 
+    _tab20_colors = plt.get_cmap("tab20")(np.linspace(0, 1, 20))
+    _tab20_colors[0] = [0, 0, 0, 1]
+    mask_cmap = plt.matplotlib.colors.ListedColormap(_tab20_colors)
     return (
         Path,
         binary_regionprops_table,
+        mask_cmap,
         mo,
         np,
-        pd,
+        plot_meshes_over_mask,
         plt,
         regionprops_table,
         stack_regionprops_table,
@@ -45,12 +50,10 @@ def _():
     )
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # `cell-regionprops` API demo
-
-    This notebook uses a small real-mask zarr copied from the parent scientific-data repository. The package itself only measures masks; it does not know about the experiment, hypotheses, mothers, or divisions.
+    # `cell-regionprops`
     """)
     return
 
@@ -71,15 +74,6 @@ def _(demo_masks, demo_zarr, mo):
     Shape: `{demo_masks.shape}` as `(sample, frame, y, x)`
     """)
     return
-
-
-@app.cell
-def _(np, plt):
-    _tab20_colors = plt.get_cmap("tab20")(np.linspace(0, 1, 20))
-    _tab20_colors[0] = [0, 0, 0, 1]
-    mask_cmap = plt.matplotlib.colors.ListedColormap(_tab20_colors)
-    mask_cmap
-    return (mask_cmap,)
 
 
 @app.cell
@@ -119,6 +113,7 @@ def _(
     label_image,
     mask_cmap,
     morphometrics_table,
+    plot_meshes_over_mask,
     plt,
     regionprops_table,
 ):
@@ -135,44 +130,11 @@ def _(
         (_mesh_ax, label_image, morphometrics_table, "Frame 0"),
         (_frame_250_ax, _frame_250_image, _frame_250_morphometrics_table, "Frame 250"),
     ]:
-        _ax.imshow(_image, cmap=mask_cmap, interpolation="nearest")
         _valid_rows = _table[
             _table["method_morphometrics"] == "contour_voronoi_rib_intersections"
         ]
-        for _, _row in _valid_rows.iterrows():
-            _mesh = _row["mesh_px_morphometrics"]
-            _centerline = _row["centerline_xy_morphometrics"]
-            for _rib in _mesh:
-                _ax.plot(
-                    [_rib[0], _rib[2]],
-                    [_rib[1], _rib[3]],
-                    color="black",
-                    linewidth=2.2,
-                    alpha=0.95,
-                )
-                _ax.plot(
-                    [_rib[0], _rib[2]],
-                    [_rib[1], _rib[3]],
-                    color="white",
-                    linewidth=1.0,
-                    alpha=0.95,
-                )
-            _ax.plot(
-                _centerline[:, 0],
-                _centerline[:, 1],
-                color="black",
-                linewidth=3.0,
-                alpha=0.95,
-            )
-            _ax.plot(
-                _centerline[:, 0],
-                _centerline[:, 1],
-                color="yellow",
-                linewidth=1.4,
-                alpha=0.95,
-            )
+        plot_meshes_over_mask(_image, _valid_rows, ax=_ax, mask_cmap=mask_cmap)
         _ax.set_title(f"{_title}: {_valid_rows.shape[0]} meshes")
-        _ax.set_axis_off()
 
     plt.tight_layout()
     morphometrics_mesh_fig
@@ -196,6 +158,8 @@ def _(demo_masks, np, stack_regionprops_table):
         _label_one_stack,
         index_names=("sample", "frame"),
         properties=("label", "moments_axis", "morphometrics"),
+        moments_chunk_size=32,
+        morphometrics_n_jobs=-1
     )
     stack_table.head()
     return (stack_table,)
@@ -227,60 +191,6 @@ def _(plt, stack_table):
     length_ax.legend(frameon=False)
     plt.tight_layout()
     length_fig
-    return
-
-
-@app.cell
-def _(demo_masks, np, pd, stack_regionprops_table):
-    hybrid_stack_table = stack_regionprops_table(
-        demo_masks[:1, :50],
-        index_names=("sample", "frame"),
-        properties=("label", "area", "centroid", "moments_axis", "morphometrics"),
-        morphometrics_n_jobs=0,
-    )
-
-    moments_stack_table = stack_regionprops_table(
-        demo_masks[:1, :50],
-        index_names=("sample", "frame"),
-        properties=("label", "area", "centroid", "moments_axis"),
-    )
-
-    _hybrid_key_columns = ["sample", "frame", "label"]
-    _hybrid_moments = hybrid_stack_table.sort_values(_hybrid_key_columns).reset_index(drop=True)
-    _moments_only = moments_stack_table.sort_values(_hybrid_key_columns).reset_index(drop=True)
-
-    hybrid_moments_match_fast_path = (
-        _hybrid_moments[[*_hybrid_key_columns, "area_px"]].equals(
-            _moments_only[[*_hybrid_key_columns, "area_px"]]
-        )
-        and np.allclose(
-            _hybrid_moments[
-                ["centroid_y", "centroid_x", "length_px_moments", "width_px_moments"]
-            ],
-            _moments_only[
-                ["centroid_y", "centroid_x", "length_px_moments", "width_px_moments"]
-            ],
-            equal_nan=True,
-        )
-    )
-
-    hybrid_stack_summary = pd.DataFrame(
-        [
-            {
-                "table": "moments only",
-                "rows": len(moments_stack_table),
-                "has_morphometrics": False,
-                "moments_match_fast_path": True,
-            },
-            {
-                "table": "moments + morphometrics",
-                "rows": len(hybrid_stack_table),
-                "has_morphometrics": "length_px_morphometrics" in hybrid_stack_table.columns,
-                "moments_match_fast_path": hybrid_moments_match_fast_path,
-            },
-        ]
-    )
-    hybrid_stack_summary
     return
 
 
