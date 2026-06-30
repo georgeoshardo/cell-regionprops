@@ -66,28 +66,42 @@ plt.show()
 <img src="docs/assets/readme_mesh_overlay.png" alt="Mesh overlay example" width="420">
 
 ```python
-# Compare moment-axis and Voronoi mesh lengths for one label over time.
-length_trace = (
+# Compare moment-axis and Voronoi mesh measurements for one label over time.
+cell_trace = (
     table.query("sample == 0 and label == 1")
     .sort_values("frame")
 )
 
-length_fig, length_ax = plt.subplots(figsize=(4.0, 2.0))
+trace_fig, (length_ax, width_ax) = plt.subplots(1, 2, figsize=(8.0, 2.0))
 length_ax.plot(
-    length_trace["frame"],
-    length_trace["length_moments"],
+    cell_trace["frame"],
+    cell_trace["length_moments"],
     label="moments",
 )
 length_ax.plot(
-    length_trace["frame"],
-    length_trace["length_morphometrics"],
+    cell_trace["frame"],
+    cell_trace["length_morphometrics"],
     label="morphometrics",
 )
 length_ax.set_xlabel("Frame")
 length_ax.set_ylabel("Length (um)")
 length_ax.legend(frameon=False)
+
+width_ax.plot(
+    cell_trace["frame"],
+    cell_trace["width_moments"],
+    label="moments",
+)
+width_ax.plot(
+    cell_trace["frame"],
+    cell_trace["width_morphometrics"],
+    label="morphometrics",
+)
+width_ax.set_xlabel("Frame")
+width_ax.set_ylabel("Width (um)")
+width_ax.legend(frameon=False)
 plt.tight_layout()
 plt.show()
 ```
 
-<img src="docs/assets/readme_length_trace.png" alt="Length trace example" width="420">
+<img src="docs/assets/readme_length_width_trace.png" alt="Length and width trace example" width="640">
