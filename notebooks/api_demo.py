@@ -196,6 +196,7 @@ def _(demo_masks, np, stack_regionprops_table):
         _label_one_stack,
         index_names=("sample", "frame"),
         properties=("label", "moments_axis", "morphometrics"),
+        execution="loop",
     )
     stack_table.head()
     return (stack_table,)
