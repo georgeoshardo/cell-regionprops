@@ -19,9 +19,11 @@ def test_regionprops_table_returns_one_row_per_label() -> None:
     assert table["label"].tolist() == [1, 2]
     assert table["area_px"].tolist() == [3, 3]
     assert table["area"].tolist() == [0.75, 0.75]
-    assert table["method"].tolist() == ["moments", "moments"]
-    assert table["length_px"].notna().all()
-    assert table["width_px"].notna().all()
+    assert "method" not in table.columns
+    assert "length_px" not in table.columns
+    assert "width_px" not in table.columns
+    assert table["length_px_moments"].notna().all()
+    assert table["width_px_moments"].notna().all()
 
 
 def test_regionprops_table_preserves_requested_missing_labels() -> None:
@@ -36,9 +38,10 @@ def test_regionprops_table_preserves_requested_missing_labels() -> None:
     assert missing["area"] == 0
     assert pd.isna(missing["centroid_y"])
     assert pd.isna(missing["centroid_x"])
-    assert pd.isna(missing["length_px"])
-    assert pd.isna(missing["width_px"])
-    assert missing["method"] == "missing"
+    assert pd.isna(missing["length_px_moments"])
+    assert pd.isna(missing["width_px_moments"])
+    assert pd.isna(missing["length_moments"])
+    assert pd.isna(missing["width_moments"])
 
 
 def test_binary_regionprops_table_uses_foreground_as_label_one() -> None:
@@ -54,4 +57,3 @@ def test_binary_regionprops_table_uses_foreground_as_label_one() -> None:
     assert table["label"].tolist() == [1]
     assert table["area_px"].tolist() == [3]
     assert table["area"].tolist() == [12.0]
-

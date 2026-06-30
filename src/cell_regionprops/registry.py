@@ -99,19 +99,17 @@ def property_moments_axis(
         pixel_size: Pixel size in physical units.
 
     Returns:
-        A dictionary containing pixel and physical major/minor axis estimates,
-        plus a `method` column describing whether the mask was measured or
-        missing.
+        A dictionary containing moment-derived pixel and physical major/minor
+        axis estimates.
     """
     del label
     rows, cols = np.nonzero(mask)
     if rows.size == 0:
         return {
-            "length_px": np.nan,
-            "width_px": np.nan,
-            "length": np.nan,
-            "width": np.nan,
-            "method": "missing",
+            "length_px_moments": np.nan,
+            "width_px_moments": np.nan,
+            "length_moments": np.nan,
+            "width_moments": np.nan,
         }
 
     coordinates = np.column_stack((rows, cols)).astype(float)
@@ -125,11 +123,10 @@ def property_moments_axis(
     length_px = float(4.0 * np.sqrt(eigenvalues[0]))
     width_px = float(4.0 * np.sqrt(eigenvalues[1]))
     return {
-        "length_px": length_px,
-        "width_px": width_px,
-        "length": length_px * pixel_size,
-        "width": width_px * pixel_size,
-        "method": "moments",
+        "length_px_moments": length_px,
+        "width_px_moments": width_px,
+        "length_moments": length_px * pixel_size,
+        "width_moments": width_px * pixel_size,
     }
 
 

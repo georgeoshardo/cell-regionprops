@@ -54,7 +54,7 @@ def make_extra_properties(
 def _make_moments_axis_length(pixel_size: float) -> SkimageExtraProperty:
     def moments_axis_length(mask: NDArray[np.bool_]) -> float:
         result = property_moments_axis(mask, label=1, pixel_size=pixel_size)
-        return float(cast(SupportsFloat, result["length"]))
+        return float(cast(SupportsFloat, result["length_moments"]))
 
     return moments_axis_length
 
@@ -62,7 +62,7 @@ def _make_moments_axis_length(pixel_size: float) -> SkimageExtraProperty:
 def _make_moments_axis_width(pixel_size: float) -> SkimageExtraProperty:
     def moments_axis_width(mask: NDArray[np.bool_]) -> float:
         result = property_moments_axis(mask, label=1, pixel_size=pixel_size)
-        return float(cast(SupportsFloat, result["width"]))
+        return float(cast(SupportsFloat, result["width_moments"]))
 
     return moments_axis_width
 
