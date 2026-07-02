@@ -14,6 +14,7 @@ dependencies = [
     "dask",
     "joblib",
     "numba",
+    "tqdm",
 ]
 
 [project.optional-dependencies]

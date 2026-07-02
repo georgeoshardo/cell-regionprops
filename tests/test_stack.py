@@ -310,3 +310,75 @@ def test_stack_regionprops_table_numba_accepts_dask_arrays() -> None:
     ]
     assert table["area_px"].tolist() == [4, 6, 6]
     assert table["length_px_moments"].notna().all()
+
+
+def test_stack_regionprops_table_measures_multichannel_intensity() -> None:
+    stack = np.zeros((1, 2, 3, 3), dtype=np.uint8)
+    stack[0, 0, 0, 1:] = 1
+    stack[0, 1, 1, 1:] = 2
+    intensity = np.zeros((1, 2, 2, 3, 3), dtype=float)
+    intensity[0, 0, 0] = np.arange(9, dtype=float).reshape(3, 3)
+    intensity[0, 0, 1] = 10 + np.arange(9, dtype=float).reshape(3, 3)
+    intensity[0, 1, 0] = 100 + np.arange(9, dtype=float).reshape(3, 3)
+    intensity[0, 1, 1] = 200 + np.arange(9, dtype=float).reshape(3, 3)
+
+    table = stack_regionprops_table(
+        stack,
+        index_names=("sample", "frame"),
+        properties=("label", "area", "intensity"),
+        intensity_stack=intensity,
+        intensity_channels={"phase": 0, "mcherry": 1},
+        moments_backend="numba",
+        morphometrics_n_jobs=0,
+    )
+
+    assert table[["sample", "frame", "label", "area_px"]].to_dict("records") == [
+        {"sample": 0, "frame": 0, "label": 1, "area_px": 2},
+        {"sample": 0, "frame": 1, "label": 2, "area_px": 2},
+    ]
+    assert table["phase_intensity_mean"].tolist() == [1.5, 104.5]
+    assert table["mcherry_intensity_mean"].tolist() == [11.5, 204.5]
+    assert "phase_intensity_q05" in table.columns
+    assert "mcherry_intensity_q95" in table.columns
+
+
+def test_stack_regionprops_table_accepts_dask_intensity_stack() -> None:
+    stack_np = np.zeros((1, 2, 3, 3), dtype=np.uint8)
+    stack_np[0, 0, 0, 1:] = 1
+    stack_np[0, 1, 1, 1:] = 1
+    intensity_np = np.zeros((1, 2, 3, 3), dtype=float)
+    intensity_np[0, 0] = np.arange(9, dtype=float).reshape(3, 3)
+    intensity_np[0, 1] = 10 + np.arange(9, dtype=float).reshape(3, 3)
+
+    table = stack_regionprops_table(
+        da.from_array(stack_np, chunks=(1, 1, 3, 3)),
+        index_names=("sample", "frame"),
+        properties=("label", "intensity"),
+        intensity_stack=da.from_array(intensity_np, chunks=(1, 1, 3, 3)),
+        intensity_channels={"phase": 0},
+        morphometrics_n_jobs=0,
+    )
+
+    assert table[["sample", "frame", "label"]].to_dict("records") == [
+        {"sample": 0, "frame": 0, "label": 1},
+        {"sample": 0, "frame": 1, "label": 1},
+    ]
+    assert table["phase_intensity_mean"].tolist() == [1.5, 14.5]
+
+
+def test_stack_regionprops_table_rejects_intensity_shape_mismatch() -> None:
+    stack = np.zeros((1, 2, 3, 3), dtype=np.uint8)
+    intensity = np.zeros((1, 3, 3), dtype=float)
+
+    try:
+        stack_regionprops_table(
+            stack,
+            index_names=("sample", "frame"),
+            properties=("label", "intensity"),
+            intensity_stack=intensity,
+            intensity_channels={"phase": 0},
+        )
+    except ValueError as error:
+        assert "intensity_stack" in str(error)
+    else:
+        raise AssertionError("Expected intensity_stack shape mismatch to be rejected.")

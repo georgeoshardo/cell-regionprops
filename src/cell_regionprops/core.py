@@ -16,6 +16,7 @@ from cell_regionprops.registry import DEFAULT_PROPERTIES, PROPERTY_REGISTRY
 
 ExtraProperty: TypeAlias = Callable[[NDArray[np.bool_]], object]
 MomentsBackend: TypeAlias = Literal["label_loop", "numba"]
+IntensityChannels: TypeAlias = Mapping[str, int]
 
 _VECTORIZABLE_PROPERTIES = {"label", "area", "centroid", "moments_axis"}
 _NUMBA_DIRECT_LABEL_MAX_BINS = 10_000_000
@@ -62,12 +63,102 @@ def _extra_property_row(
     }
 
 
+def _format_percentile(percentile: float) -> str:
+    if float(percentile).is_integer():
+        return f"q{int(percentile):02d}"
+    return f"q{str(percentile).replace('.', '_')}"
+
+
+def _normalise_intensity_channels(
+    intensity_channels: IntensityChannels | None,
+) -> dict[str, int]:
+    if intensity_channels is None or len(intensity_channels) == 0:
+        raise ValueError("`intensity_channels` must map channel names to channel indices.")
+    channels: dict[str, int] = {}
+    for name, index in intensity_channels.items():
+        if not isinstance(name, str) or not name.isascii() or not name.replace("_", "").isalnum():
+            raise ValueError("Intensity channel names must be ASCII letters, numbers, or underscores.")
+        if int(index) < 0:
+            raise ValueError("Intensity channel indices must be non-negative.")
+        channels[name] = int(index)
+    return channels
+
+
+def _normalise_intensity_percentiles(
+    intensity_percentiles: Iterable[float],
+) -> tuple[float, ...]:
+    percentiles = tuple(float(percentile) for percentile in intensity_percentiles)
+    for percentile in percentiles:
+        if percentile < 0 or percentile > 100:
+            raise ValueError("Intensity percentiles must lie between 0 and 100.")
+    return percentiles
+
+
+def _validate_intensity_image(
+    intensity_image: ArrayLike | None,
+    *,
+    label_shape: tuple[int, int],
+    channels: dict[str, int],
+) -> NDArray[Any]:
+    if intensity_image is None:
+        raise ValueError("`intensity_image` is required when requesting the 'intensity' property.")
+    image = np.asarray(intensity_image)
+    if image.ndim == 2:
+        if image.shape != label_shape:
+            raise ValueError("2D `intensity_image` must match `label_image` shape.")
+        if any(index != 0 for index in channels.values()):
+            raise ValueError("2D `intensity_image` only supports channel index 0.")
+        return image
+    if image.ndim == 3:
+        if image.shape[-2:] != label_shape:
+            raise ValueError("3D `intensity_image` must have shape `(channel, y, x)`.")
+        max_channel = image.shape[0] - 1
+        if any(index > max_channel for index in channels.values()):
+            raise ValueError("`intensity_channels` contains an out-of-bounds channel index.")
+        return image
+    raise ValueError("`intensity_image` must have shape `(y, x)` or `(channel, y, x)`.")
+
+
+def _intensity_property_row(
+    mask: NDArray[np.bool_],
+    intensity_image: NDArray[Any],
+    channels: dict[str, int],
+    percentiles: tuple[float, ...],
+) -> dict[str, object]:
+    row: dict[str, object] = {}
+    for channel_name, channel_index in channels.items():
+        channel_image = intensity_image if intensity_image.ndim == 2 else intensity_image[channel_index]
+        values = np.asarray(channel_image[mask], dtype=float)
+        prefix = f"{channel_name}_intensity"
+        if values.size == 0 or np.isnan(values).all():
+            row[f"{prefix}_mean"] = np.nan
+            row[f"{prefix}_median"] = np.nan
+            row[f"{prefix}_min"] = np.nan
+            row[f"{prefix}_max"] = np.nan
+            for percentile in percentiles:
+                row[f"{prefix}_{_format_percentile(percentile)}"] = np.nan
+            continue
+
+        row[f"{prefix}_mean"] = float(np.nanmean(values))
+        row[f"{prefix}_median"] = float(np.nanmedian(values))
+        row[f"{prefix}_min"] = float(np.nanmin(values))
+        row[f"{prefix}_max"] = float(np.nanmax(values))
+        for percentile in percentiles:
+            row[f"{prefix}_{_format_percentile(percentile)}"] = float(
+                np.nanpercentile(values, percentile)
+            )
+    return row
+
+
 def regionprops_table(
     label_image: ArrayLike,
     *,
     pixel_size: float = 1.0,
     labels: Iterable[int] | None = None,
     properties: Iterable[str] | None = None,
+    intensity_image: ArrayLike | None = None,
+    intensity_channels: IntensityChannels | None = None,
+    intensity_percentiles: Iterable[float] = (5, 95),
     extra_properties: Mapping[str, ExtraProperty] | None = None,
 ) -> pd.DataFrame:
     """Measure requested properties for each label in a 2D mask.
@@ -82,6 +173,13 @@ def regionprops_table(
             output.
         properties: Names of built-in properties to compute. Defaults to all
             built-in properties.
+        intensity_image: Optional intensity image with shape `(y, x)` or
+            `(channel, y, x)`. Required when requesting the `intensity`
+            property.
+        intensity_channels: Mapping from output channel names to channel indices
+            in `intensity_image`.
+        intensity_percentiles: Percentiles to report for each requested
+            intensity channel.
         extra_properties: Additional named functions that receive each binary
             object mask and return one scalar-like value.
 
@@ -96,17 +194,49 @@ def regionprops_table(
     image = _validate_label_image(label_image)
     selected_properties = _normalise_properties(properties)
     measured_labels = _labels_to_measure(image, labels)
+    intensity_requested = "intensity" in selected_properties
+    intensity_channel_map = (
+        _normalise_intensity_channels(intensity_channels)
+        if intensity_requested
+        else {}
+    )
+    intensity_percentile_values = (
+        _normalise_intensity_percentiles(intensity_percentiles)
+        if intensity_requested
+        else ()
+    )
+    intensity_image_np = (
+        _validate_intensity_image(
+            intensity_image,
+            label_shape=image.shape,
+            channels=intensity_channel_map,
+        )
+        if intensity_requested
+        else None
+    )
 
     rows: list[dict[str, object]] = []
     for label in measured_labels:
         mask = image == label
         row: dict[str, object] = {}
         for property_name in selected_properties:
-            try:
-                property_function = PROPERTY_REGISTRY[property_name]
-            except KeyError as error:
-                raise KeyError(f"Unknown property: {property_name}") from error
-            row.update(property_function(mask, label, pixel_size))
+            if property_name == "intensity":
+                if intensity_image_np is None:
+                    raise ValueError("`intensity_image` is required when requesting the 'intensity' property.")
+                row.update(
+                    _intensity_property_row(
+                        mask,
+                        intensity_image_np,
+                        intensity_channel_map,
+                        intensity_percentile_values,
+                    )
+                )
+            else:
+                try:
+                    property_function = PROPERTY_REGISTRY[property_name]
+                except KeyError as error:
+                    raise KeyError(f"Unknown property: {property_name}") from error
+                row.update(property_function(mask, label, pixel_size))
         row.update(_extra_property_row(mask, extra_properties))
         rows.append(row)
 
@@ -118,6 +248,9 @@ def binary_regionprops_table(
     *,
     pixel_size: float = 1.0,
     properties: Iterable[str] | None = None,
+    intensity_image: ArrayLike | None = None,
+    intensity_channels: IntensityChannels | None = None,
+    intensity_percentiles: Iterable[float] = (5, 95),
     extra_properties: Mapping[str, ExtraProperty] | None = None,
 ) -> pd.DataFrame:
     """Measure properties for a single foreground object in a binary mask.
@@ -127,6 +260,13 @@ def binary_regionprops_table(
         pixel_size: Size of one pixel in physical units. Defaults to 1.0.
         properties: Names of built-in properties to compute. Defaults to all
             built-in properties.
+        intensity_image: Optional intensity image with shape `(y, x)` or
+            `(channel, y, x)`. Required when requesting the `intensity`
+            property.
+        intensity_channels: Mapping from output channel names to channel indices
+            in `intensity_image`.
+        intensity_percentiles: Percentiles to report for each requested
+            intensity channel.
         extra_properties: Additional named functions that receive the binary
             foreground mask and return one scalar-like value.
 
@@ -146,6 +286,9 @@ def binary_regionprops_table(
         pixel_size=pixel_size,
         labels=(1,),
         properties=properties,
+        intensity_image=intensity_image,
+        intensity_channels=intensity_channels,
+        intensity_percentiles=intensity_percentiles,
         extra_properties=extra_properties,
     )
 
@@ -156,6 +299,9 @@ def stack_regionprops_table(
     index_names: Sequence[str] | None = None,
     pixel_size: float = 1.0,
     properties: Iterable[str] | None = None,
+    intensity_stack: object | None = None,
+    intensity_channels: IntensityChannels | None = None,
+    intensity_percentiles: Iterable[float] = (5, 95),
     extra_properties: Mapping[str, ExtraProperty] | None = None,
     moments_backend: MomentsBackend = "label_loop",
     moments_chunk_size: int | None = None,
@@ -178,6 +324,13 @@ def stack_regionprops_table(
         pixel_size: Size of one pixel in physical units. Defaults to 1.0.
         properties: Names of built-in properties to compute. Defaults to all
             built-in properties.
+        intensity_stack: Optional intensity array. Its leading axes must match
+            `label_stack`; shape may be `(..., y, x)` for one channel or
+            `(..., channel, y, x)` for multiple channels.
+        intensity_channels: Mapping from output channel names to channel indices
+            in `intensity_stack`.
+        intensity_percentiles: Percentiles to report for each requested
+            intensity channel.
         extra_properties: Additional named functions that receive each binary
             object mask and return one scalar-like value.
         moments_backend: Vectorized backend for label, area, centroid, and
@@ -218,6 +371,27 @@ def stack_regionprops_table(
         raise ValueError("`index_names` must match the number of leading axes.")
 
     selected_properties = _normalise_properties(properties)
+    intensity_requested = "intensity" in selected_properties
+    intensity_channel_map = (
+        _normalise_intensity_channels(intensity_channels)
+        if intensity_requested
+        else {}
+    )
+    intensity_percentile_values = (
+        _normalise_intensity_percentiles(intensity_percentiles)
+        if intensity_requested
+        else ()
+    )
+    intensity_stack_for_compute = None
+    if intensity_requested:
+        if intensity_stack is None:
+            raise ValueError("`intensity_stack` is required when requesting the 'intensity' property.")
+        intensity_stack_for_compute = _compute_stack_if_needed(intensity_stack)
+        _validate_intensity_stack(
+            intensity_stack_for_compute,
+            label_shape=tuple(stack.shape),
+            channels=intensity_channel_map,
+        )
     vectorized_properties = tuple(
         property_name
         for property_name in selected_properties
@@ -253,6 +427,9 @@ def stack_regionprops_table(
             index_names=names,
             pixel_size=pixel_size,
             properties=per_object_properties,
+            intensity_stack=intensity_stack_for_compute,
+            intensity_channels=intensity_channel_map,
+            intensity_percentiles=intensity_percentile_values,
             extra_properties=extra_properties,
             n_jobs=morphometrics_n_jobs,
         )
@@ -272,6 +449,32 @@ def _compute_stack_if_needed(stack: Any) -> NDArray[np.integer]:
     return np.asarray(stack)
 
 
+def _validate_intensity_stack(
+    intensity_stack: NDArray[Any],
+    *,
+    label_shape: tuple[int, ...],
+    channels: dict[str, int],
+) -> None:
+    leading_shape = label_shape[:-2]
+    spatial_shape = label_shape[-2:]
+    if intensity_stack.shape == label_shape:
+        if any(index != 0 for index in channels.values()):
+            raise ValueError("Single-channel `intensity_stack` only supports channel index 0.")
+        return
+    expected_ndim = len(leading_shape) + 3
+    if intensity_stack.ndim != expected_ndim:
+        raise ValueError(
+            "`intensity_stack` must have shape `(..., y, x)` or `(..., channel, y, x)`."
+        )
+    if intensity_stack.shape[:len(leading_shape)] != leading_shape:
+        raise ValueError("`intensity_stack` leading axes must match `label_stack`.")
+    if intensity_stack.shape[-2:] != spatial_shape:
+        raise ValueError("`intensity_stack` spatial axes must match `label_stack`.")
+    max_channel = intensity_stack.shape[len(leading_shape)] - 1
+    if any(index > max_channel for index in channels.values()):
+        raise ValueError("`intensity_channels` contains an out-of-bounds channel index.")
+
+
 def _normalise_n_jobs(n_jobs: int) -> int:
     return 1 if n_jobs == 0 else n_jobs
 
@@ -282,6 +485,9 @@ def _stack_regionprops_table_per_object(
     index_names: tuple[str, ...],
     pixel_size: float,
     properties: tuple[str, ...],
+    intensity_stack: NDArray[Any] | None,
+    intensity_channels: dict[str, int],
+    intensity_percentiles: tuple[float, ...],
     extra_properties: Mapping[str, ExtraProperty] | None,
     n_jobs: int,
 ) -> pd.DataFrame:
@@ -291,10 +497,14 @@ def _stack_regionprops_table_per_object(
 
     def measure_frame(index: tuple[int, ...]) -> list[dict[str, object]]:
         frame = stack[index]
+        intensity_frame = None if intensity_stack is None else intensity_stack[index]
         table = regionprops_table(
             frame,
             pixel_size=pixel_size,
             properties=requested_properties,
+            intensity_image=intensity_frame,
+            intensity_channels=intensity_channels,
+            intensity_percentiles=intensity_percentiles,
             extra_properties=extra_properties,
         )
         if table.empty:
