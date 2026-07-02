@@ -10,6 +10,7 @@ import pandas as pd
 from joblib import Parallel, delayed
 from numba import njit, prange
 from numpy.typing import ArrayLike, NDArray
+from tqdm.auto import tqdm
 
 from cell_regionprops.registry import DEFAULT_PROPERTIES, PROPERTY_REGISTRY
 
@@ -308,12 +309,18 @@ def _stack_regionprops_table_per_object(
         ]
 
     normalised_n_jobs = _normalise_n_jobs(n_jobs)
+    progress = tqdm(
+        frame_indices,
+        desc="Morphometrics frames",
+        unit="frame",
+        leave=False,
+    )
     if normalised_n_jobs == 1:
-        measured_rows = [measure_frame(index) for index in frame_indices]
+        measured_rows = [measure_frame(index) for index in progress]
     else:
         measured_rows = Parallel(n_jobs=normalised_n_jobs)(
             delayed(measure_frame)(index)
-            for index in frame_indices
+            for index in progress
         )
 
     rows = [
@@ -550,7 +557,13 @@ def _stack_regionprops_table_numba_chunked(
     chunk_size: int,
 ) -> pd.DataFrame:
     column_chunks: list[dict[str, NDArray[Any]]] = []
-    for start in range(0, int(stack.shape[0]), chunk_size):
+    chunk_starts = range(0, int(stack.shape[0]), chunk_size)
+    for start in tqdm(
+        chunk_starts,
+        desc="Moments chunks",
+        unit="chunk",
+        leave=False,
+    ):
         stop = min(start + chunk_size, int(stack.shape[0]))
         chunk = _compute_stack_if_needed(stack[start:stop])
         columns = _stack_regionprops_table_numba_columns(
