@@ -12,6 +12,7 @@ from typing import Callable, TypeAlias
 import numpy as np
 from numpy.typing import NDArray
 
+from cell_regionprops.mm3_feret import property_mm3_feret
 from cell_regionprops.morphometrics import property_morphometrics
 
 PropertyResult: TypeAlias = dict[str, object]
@@ -135,5 +136,6 @@ PROPERTY_REGISTRY: dict[str, PropertyFunction] = {
     "area": property_area,
     "centroid": property_centroid,
     "moments_axis": property_moments_axis,
+    "mm3_feret": property_mm3_feret,
     "morphometrics": property_morphometrics,
 }

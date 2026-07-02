@@ -12,13 +12,17 @@ from numba import njit, prange
 from numpy.typing import ArrayLike, NDArray
 from tqdm.auto import tqdm
 
+from cell_regionprops.mm3_feret import (
+    measure_mm3_feret_from_mask,
+    orientation_from_central_moments,
+)
 from cell_regionprops.registry import DEFAULT_PROPERTIES, PROPERTY_REGISTRY
 
 ExtraProperty: TypeAlias = Callable[[NDArray[np.bool_]], object]
 MomentsBackend: TypeAlias = Literal["label_loop", "numba"]
 IntensityChannels: TypeAlias = Mapping[str, int]
 
-_VECTORIZABLE_PROPERTIES = {"label", "area", "centroid", "moments_axis"}
+_VECTORIZABLE_PROPERTIES = {"label", "area", "centroid", "moments_axis", "mm3_feret"}
 _NUMBA_DIRECT_LABEL_MAX_BINS = 10_000_000
 
 
@@ -614,6 +618,8 @@ def _stack_regionprops_table_label_loop(
     if not labels:
         return pd.DataFrame(columns=list(index_names))
 
+    mm3_feret_requested = "mm3_feret" in properties
+    frames_np = np.asarray(_compute_stack_if_needed(stack)).reshape((-1, height, width)) if mm3_feret_requested else None
     y = np.arange(height, dtype=float)[:, None]
     x = np.arange(width, dtype=float)[None, :]
 
@@ -637,13 +643,13 @@ def _stack_regionprops_table_label_loop(
             minor_eigenvalue = da.maximum((mu20 + mu02 - eigenvalue_gap) / 2.0, 0.0)
             length_px = 4.0 * da.sqrt(major_eigenvalue)
             width_px = 4.0 * da.sqrt(minor_eigenvalue)
-            area_np, x_mean_np, y_mean_np, length_px_np, width_px_np = da.compute(
-                area,
-                x_mean,
-                y_mean,
-                length_px,
-                width_px,
-            )
+            values_to_compute = [area, x_mean, y_mean, length_px, width_px]
+            if mm3_feret_requested:
+                values_to_compute.extend([mu20, mu02, mu11])
+            computed_values = da.compute(*values_to_compute)
+            area_np, x_mean_np, y_mean_np, length_px_np, width_px_np = computed_values[:5]
+            if mm3_feret_requested:
+                mu20_np, mu02_np, mu11_np = computed_values[5:]
         else:
             eigenvalue_gap = np.sqrt((mu20 - mu02) ** 2 + 4.0 * mu11**2)
             major_eigenvalue = np.maximum((mu20 + mu02 + eigenvalue_gap) / 2.0, 0.0)
@@ -653,6 +659,13 @@ def _stack_regionprops_table_label_loop(
             area_np = np.asarray(area)
             x_mean_np = np.asarray(x_mean)
             y_mean_np = np.asarray(y_mean)
+            if mm3_feret_requested:
+                mu20_np = np.asarray(mu20)
+                mu02_np = np.asarray(mu02)
+                mu11_np = np.asarray(mu11)
+
+        if mm3_feret_requested:
+            orientation_np = orientation_from_central_moments(mu20_np, mu02_np, mu11_np)
 
         present_frame_indices = np.flatnonzero(area_np > 0)
         if present_frame_indices.size == 0:
@@ -678,6 +691,20 @@ def _stack_regionprops_table_label_loop(
                     row["width_px_moments"] = float(width_px_np[flat_index])
                     row["length_moments"] = float(length_px_np[flat_index] * pixel_size)
                     row["width_moments"] = float(width_px_np[flat_index] * pixel_size)
+                elif property_name == "mm3_feret":
+                    if frames_np is None:
+                        raise RuntimeError("Internal error: missing frames for MM3 Feret measurement.")
+                    row.update(
+                        measure_mm3_feret_from_mask(
+                            frames_np[flat_index] == label,
+                            pixel_size=pixel_size,
+                            centroid_y=float(y_mean_np[flat_index]),
+                            centroid_x=float(x_mean_np[flat_index]),
+                            orientation=float(orientation_np[flat_index]),
+                            major_axis_length=float(length_px_np[flat_index]),
+                            minor_axis_length=float(width_px_np[flat_index]),
+                        )
+                    )
                 else:
                     raise KeyError(f"Unknown vectorized property: {property_name}")
             rows.append(row)
@@ -850,6 +877,7 @@ def _stack_regionprops_table_numba_columns(
         )
 
     return _numba_moments_columns_from_matrices(
+        frames=frames,
         area_matrix=area_matrix,
         sum_x_matrix=sum_x_matrix,
         sum_y_matrix=sum_y_matrix,
@@ -866,6 +894,7 @@ def _stack_regionprops_table_numba_columns(
 
 def _numba_moments_columns_from_matrices(
     *,
+    frames: NDArray[np.int32],
     area_matrix: NDArray[np.int64],
     sum_x_matrix: NDArray[np.float64],
     sum_y_matrix: NDArray[np.float64],
@@ -895,6 +924,9 @@ def _numba_moments_columns_from_matrices(
     minor_eigenvalue = np.maximum((mu20 + mu02 - eigenvalue_gap) / 2.0, 0.0)
     length_px = 4.0 * np.sqrt(major_eigenvalue)
     width_px = 4.0 * np.sqrt(minor_eigenvalue)
+    mm3_feret_requested = "mm3_feret" in properties
+    if mm3_feret_requested:
+        orientation = orientation_from_central_moments(mu20, mu02, mu11)
 
     columns: dict[str, NDArray[Any]] = {
         name: np.asarray(unraveled[axis], dtype=np.int64)
@@ -914,6 +946,77 @@ def _numba_moments_columns_from_matrices(
             columns["width_px_moments"] = width_px
             columns["length_moments"] = length_px * pixel_size
             columns["width_moments"] = width_px * pixel_size
+        elif property_name == "mm3_feret":
+            if not mm3_feret_requested:
+                raise RuntimeError("Internal error: MM3 Feret orientation was not computed.")
+            columns.update(
+                _mm3_feret_columns(
+                    frames=frames,
+                    present_frame_indices=present_frame_indices,
+                    present_label_codes=present_label_codes,
+                    y_mean=y_mean,
+                    x_mean=x_mean,
+                    orientation=orientation,
+                    length_px=length_px,
+                    width_px=width_px,
+                    pixel_size=pixel_size,
+                )
+            )
         else:
             raise KeyError(f"Unknown numba property: {property_name}")
     return columns
+
+
+def _mm3_feret_columns(
+    *,
+    frames: NDArray[np.int32],
+    present_frame_indices: NDArray[np.int64],
+    present_label_codes: NDArray[np.int64],
+    y_mean: NDArray[np.float64],
+    x_mean: NDArray[np.float64],
+    orientation: NDArray[np.float64],
+    length_px: NDArray[np.float64],
+    width_px: NDArray[np.float64],
+    pixel_size: float,
+) -> dict[str, NDArray[Any]]:
+    row_count = int(present_frame_indices.size)
+    length_px_values = np.full(row_count, np.nan, dtype=float)
+    width_px_values = np.full(row_count, np.nan, dtype=float)
+    length_values = np.full(row_count, np.nan, dtype=float)
+    width_values = np.full(row_count, np.nan, dtype=float)
+    volume_values = np.full(row_count, np.nan, dtype=float)
+    surface_area_values = np.full(row_count, np.nan, dtype=float)
+    surface_area_to_volume_values = np.full(row_count, np.nan, dtype=float)
+    method_values = np.empty(row_count, dtype=object)
+
+    for row_index in range(row_count):
+        measurement = measure_mm3_feret_from_mask(
+            frames[present_frame_indices[row_index]] == present_label_codes[row_index],
+            pixel_size=pixel_size,
+            centroid_y=float(y_mean[row_index]),
+            centroid_x=float(x_mean[row_index]),
+            orientation=float(orientation[row_index]),
+            major_axis_length=float(length_px[row_index]),
+            minor_axis_length=float(width_px[row_index]),
+        )
+        length_px_values[row_index] = float(measurement["length_px_mm3_feret"])
+        width_px_values[row_index] = float(measurement["width_px_mm3_feret"])
+        length_values[row_index] = float(measurement["length_mm3_feret"])
+        width_values[row_index] = float(measurement["width_mm3_feret"])
+        volume_values[row_index] = float(measurement["volume_mm3_feret"])
+        surface_area_values[row_index] = float(measurement["surface_area_mm3_feret"])
+        surface_area_to_volume_values[row_index] = float(
+            measurement["surface_area_to_volume_ratio_mm3_feret"]
+        )
+        method_values[row_index] = measurement["method_mm3_feret"]
+
+    return {
+        "length_px_mm3_feret": length_px_values,
+        "width_px_mm3_feret": width_px_values,
+        "length_mm3_feret": length_values,
+        "width_mm3_feret": width_values,
+        "volume_mm3_feret": volume_values,
+        "surface_area_mm3_feret": surface_area_values,
+        "surface_area_to_volume_ratio_mm3_feret": surface_area_to_volume_values,
+        "method_mm3_feret": method_values,
+    }
